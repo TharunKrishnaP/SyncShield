@@ -45,18 +45,26 @@ relief-operations message → RELIEF_SHELTER_FULL).
 
 ## C — Sentinel-1 SAR flood U-Net (pipeline live; full-IoU training on Colab)
 
-- **Data**: Sen1Floods11 (cc-by-4.0) via HF mirror `harshinde/sen1floods`
-  (~35 GB tar; S1Hand VV/VH + water labels). Real-run scope: the dataset's
-  **single India event** (2016 Assam, 535 chips) — `download_sen1floods11.py
-  --events India --layers S1Hand LabelHand` extracts only the needed
-  `S1Hand`+`LabelHand` pairs (~1.5 GB on disk) and deletes the tar (~35 GB freed).
+- **Data**: Sen1Floods11 (cc-by-4.0) from the **canonical public GCS bucket**
+  `sen1floods11` (the old HF mirror `harshinde/sen1floods` now 401s anonymous
+  downloads, so the downloader fetches the exact files it needs directly from
+  GCS — no auth, no ~35 GB tar). Real-run scope: the dataset's **single India
+  event** (2016 Assam, **535 chips**) — `download_sen1floods11.py --events India`
+  fetches `S1Hand` 2-band VV/VH imagery + water labels, ~0.9 GB on disk,
+  arranged in the dataset's own split:
+  - `WeakLabeled/` — **467 chips** with auto Otsu labels (metadata `train_chip`)
+  - `HandLabeled/` — **68 chips** with human QC labels (metadata `val_chip`)
+- **Labels**: canonical Sen1Floods11 encoding — `1 = water`, `0 = not water`,
+  `-1 = no data` (masked out of the loss). Weak labels are the Otsu water mask
+  (`{0,1}`), hand labels are human QC (`{-1,0,1}`).
 - **Model**: U-Net, encoder resnet18 (imagenet-pretrained), in=2, out=1,
-  BCE-with-logits + Adam, LR 1e-3.
+  weighted BCE-with-logits + Adam, LR 1e-3.
 - **Training**: `ml/sar/train_colab.ipynb` on a free T4
   (`train_unet.py --mode sen1floods11`) → val IoU/Dice reported in
-  `ml/artifacts/sar_unet/meta.json`. Train/val are split **deterministically by
-  chip-id hash (85/15, `Sen1Floods11(partition=...)`)**, so the reported val
-  IoU is on held-out chips — no leak.
+  `ml/artifacts/sar_unet/meta.json`. Split = the **dataset's own geographic
+  split** (`Sen1Floods11(partition=...)`: train reads WeakLabeled, val reads
+  HandLabeled; chip-id sets are disjoint by construction), so the reported val
+  IoU is on hand-QC chips/labels the model never saw — no leak.
 - **Local certification — LIVE (2026-09-24, CPU, ~17 min)**:
   `train_unet.py --mode synthetic` — 260 chips × 12 epochs, 2-band VV/VH
   percentile-normalised, per-pixel speckle + 1–4 water ellipses (distribution

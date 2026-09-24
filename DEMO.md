@@ -94,10 +94,11 @@ Current certified run (CPU, 2026-09-24): **val IoU 0.9647 / val Dice 0.9817**
    (2-band VV/VH stand-ins trained on CPU). The real model trains for free on
    Colab T4 via `ml/sar/train_colab.ipynb` from Sen1Floods11 — scoped to the
    dataset's single India event (2016 Assam, 535 chips; `download_sen1floods11.py
-   --events India --layers S1Hand LabelHand`) with a deterministic 85/15 split
-   for an honest held-out IoU. The same code paths (`infer.py`, `sar_model.py`)
-   serve it unchanged — the backend hot-reloads new artifacts by file mtime,
-   no restart.
+   --events India` from the public GCS bucket, ~0.9 GB) using the dataset's own
+   split: 467 weakly-labeled chips as train + 68 hand-labeled chips as
+   validation, for an honest held-out IoU. The same code paths (`infer.py`,
+   `sar_model.py`) serve it unchanged — the backend hot-reloads new artifacts
+   by file mtime, no restart.
 
 ## 5. The AI/ML story (3 min) — Rubric links
 

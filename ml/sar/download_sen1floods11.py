@@ -1,126 +1,194 @@
-"""Download the Sen1Floods11 subset(s) from the Hugging Face mirror.
+"""Download Sen1Floods11 event subsets directly from the canonical public GCS bucket.
 
-Mirror: https://huggingface.co/datasets/harshinde/sen1floods (cc-by-4.0)
-Ships as a single ~35 GB tarball of ALL events/layers. You usually do NOT need
-the whole tar: ``--events`` + ``--layers`` filter the extraction *before* any
-bytes hit disk, so a single-event India run keeps only ~1.5 GB (S1Hand +
-LabelHand pairs). The tar itself is deleted from the HF cache afterwards to
-free the ~35 GB.
+Why not the Hugging Face mirror (``harshinde/sen1floods``)? The mirror's
+single ~35 GB tar started returning HTTP 401 for anonymous downloads (Sept
+2025) even though the repo is public. The canonical bucket ``sen1floods11``
+(Google Cloud Storage) is public: ``https://storage.googleapis.com/sen1floods11/...``
+serves files with NO auth, and the storage JSON API lists objects by prefix —
+so we fetch only the exact files we need. A single-event India run is
+~0.9 GB on disk, not ~35 GB.
+
+Canonical v1.1 layout (files named ``<EVENT>_<CHIPID>_<LAYER>.tif``):
+
+    v1.1/data/flood_events/HandLabeled/{S1Hand,S2Hand,LabelHand,JRCWaterHand,S1OtsuLabelHand}/
+    v1.1/data/flood_events/WeaklyLabeled/{S1Weak,S2Weak,S1OtsuLabelWeak,S2IndexLabelWeak}/
+
+Relevant layers (authors' README layer table):
+
+    S1 imagery       2-band float32, VV/VH, dB (S1Hand for hand-labeled chips;
+                     S1Weak for weakly-labeled chips - same format)
+    LabelHand        int16  {-1 = no data, 0 = not water, 1 = water}
+    S1OtsuLabelWeak  int16  {0, 1} water mask from VH Otsu thresholding
+
+Per the authors' metadata (``Sen1Floods11_Metadata.geojson``), each event is
+split into ``train_chip`` (weak-labeled) + ``val_chip`` (hand-labeled); the
+India event (2016 Assam) is 467 + 68 = 535 chips. This script fetches BOTH
+pools and renames them into the layout ``train_unet.py`` reads:
+
+    <out>/WeakLabeled/S1Hand_India_<id>.tif + LabelHand_India_<id>.tif   (train pool)
+    <out>/HandLabeled/S1Hand_India_<id>.tif + LabelHand_India_<id>.tif   (val pool)
+
+``train_unet.py --mode sen1floods11`` then trains on WeakLabeled and validates
+on HandLabeled - the dataset's own split, so the reported val IoU is on chips
+and labels the model never saw (no leak).
 
 Usage:
-    # India event only, image+label pairs (what train_unet.py reads):
-    python ml/sar/download_sen1floods11.py --events India --layers S1Hand LabelHand
-    python ml/sar/download_sen1floods11.py --out /content/sen1floods11
-        --events India --layers S1Hand LabelHand
-    python ml/sar/download_sen1floods11.py            # full dataset (60-70 GB)
-    # multiple events/layers:
-    python ml/sar/download_sen1floods11.py --events India Pakistan Sri-Lanka \
-        --layers S1Hand LabelHand
-
-Training happens with `train_unet.py --mode sen1floods11 --data-dir <out>`.
-Tile names follow ``<Layer>_<Event>_<chipid>.tif`` (mirror layout, e.g.
-``S1Hand_India_5.tif``), so matching is done on the underscore tokens.
+    python ml/sar/download_sen1floods11.py --events India --out /content/sen1floods11
+    python ml/sar/download_sen1floods11.py --events India Pakistan Sri-Lanka
+    python ml/sar/download_sen1floods11.py --out /content/sen1floods11   # all events
 """
 import argparse
-import os
-import tarfile
+import json
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REPO_ID = "harshinde/sen1floods"
-ARCHIVE = "sen1floods11.tar.gz"
+BUCKET = "sen1floods11"
+ROOT = "v1.1/data/flood_events"
+BASE_URL = f"https://storage.googleapis.com/{BUCKET}/"
+LIST_URL = f"https://storage.googleapis.com/storage/v1/b/{BUCKET}/o"
+
+# canonical pool folder -> (S1 image layer, water-label layer, local subdir name)
+POOLS = [
+    ("WeaklyLabeled", "S1Weak", "S1OtsuLabelWeak", "WeakLabeled"),
+    ("HandLabeled", "S1Hand", "LabelHand", "HandLabeled"),
+]
+
+# from v1.1/Sen1Floods11_Metadata.geojson: event -> (train_chip, val_chip)
+EVENTS = {
+    "Bolivia": (224, 15),
+    "Colombia": (534, 0),
+    "Ghana": (181, 53),
+    "India": (467, 68),
+    "Cambodia": (1353, 30),
+    "Nigeria": (109, 18),
+    "Pakistan": (249, 28),
+    "Paraguay": (316, 67),
+    "Somalia": (129, 26),
+    "Spain": (146, 30),
+    "Sri-Lanka": (190, 42),
+    "USA": (486, 69),
+}
+EVENT_KEYS = {e.lower(): e for e in EVENTS}
 
 
-def safe_path(p: Path) -> Path:
-    """Collapse '..' so we never extract outside the target dir."""
-    return Path(os.path.normpath(str(p)))
+def list_objects(prefix: str):
+    """All object names under a GCS prefix (paged through the JSON API)."""
+    names, token = [], None
+    while True:
+        params = {"prefix": prefix, "maxResults": "1000"}
+        if token:
+            params["pageToken"] = token
+        url = LIST_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=60) as r:
+            data = json.load(r)
+        names += [it["name"] for it in data.get("items", [])]
+        token = data.get("nextPageToken")
+        if not token:
+            break
+    return names
 
 
-def tokens(file_name: str) -> set:
-    """Upper-cased underscore tokens of a tile basename.
+def download_one(name: str, dst: Path, urlopen_timeout: int = 120):
+    """Fetch one object to ``dst`` (skip if already there and non-empty)."""
+    if dst.exists() and dst.stat().st_size > 0:
+        return dst, False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    url = BASE_URL + urllib.parse.quote(name)
+    partial = dst.with_suffix(dst.suffix + ".part")
+    with urllib.request.urlopen(url, timeout=urlopen_timeout) as r:
+        with open(partial, "wb") as fh:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                fh.write(chunk)
+    partial.replace(dst)
+    return dst, True
 
-    ``S1Hand_India_5.tif`` -> {"S1HAND", "INDIA", "5"}
-    """
-    stem = Path(file_name).name
-    stem = stem[: stem.rfind(".")] if "." in stem else stem
-    return {t.upper() for t in stem.split("_") if t}
 
-
-def wanted(member_name: str, events, layers) -> bool:
-    """True when a tar member should be extracted.
-
-    With no filters everything is kept (full-dataset mode). With filters, only
-    ``.tif`` files whose name carries every requested event and one of the
-    requested layers pass.
-    """
-    if not events and not layers:
-        return True
-    if not member_name.lower().endswith(".tif"):
-        return False
-    toks = tokens(member_name)
-    if events and not toks.intersection(set(events)):
-        return False
-    if layers and not toks.intersection(set(layers)):
-        return False
-    return True
+def plan(events, out_root: Path):
+    """Build (source object name, destination path) jobs for the chosen events."""
+    wanted = {e.lower() for e in (events or EVENT_KEYS)}
+    jobs = []
+    for pool, img_layer, lab_layer, subdir in POOLS:
+        for layer, tag in ((img_layer, "image"), (lab_layer, "label")):
+            names = list_objects(f"{ROOT}/{pool}/{layer}/")
+            for name in names:
+                stem = Path(name).name[: -len(".tif")]
+                # <EVENT>_<CHIPID>_<LAYER>  (event has no underscores; strip the
+                # trailing layer token so chip = the numeric id only)
+                event_token, _, rest = stem.partition("_")
+                chip = rest.rsplit("_", 1)[0]
+                if event_token.lower() not in wanted:
+                    continue
+                local_layer = "S1Hand" if tag == "image" else "LabelHand"
+                dst = out_root / subdir / f"{local_layer}_{event_token}_{chip}.tif"
+                jobs.append((name, dst))
+    return jobs
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default="/content/sen1floods11",
-                    help="Extraction directory (default: /content/sen1floods11)")
+                    help="Output directory (default: /content/sen1floods11)")
     ap.add_argument("--events", nargs="*", default=None,
-                    help="Only extract these events (e.g. --events India), matched "
-                         "against the EVENT token of each tile name (mirror layout "
-                         "'<Layer>_<Event>_<chipid>.tif').")
-    ap.add_argument("--layers", nargs="*", default=None,
-                    help="Only extract these layers (e.g. --layers S1Hand LabelHand). "
-                         "train_unet.py needs S1Hand + LabelHand only.")
-    ap.add_argument("--no-delete-tar", action="store_true",
-                    help="Keep the downloaded tar in the HF cache (default: delete it "
-                         "after extraction to free ~35 GB).")
+                    help="Events to fetch (e.g. --events India). Default: all 12.")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="Concurrent download workers (default: 8)")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="Debug: only fetch the first N chips of each pool (0 = all).")
     args = ap.parse_args()
+    events = [EVENT_KEYS.get(e.lower(), e) for e in (args.events or [])]
+    if args.events:
+        unknown = [e for e in events if e not in EVENTS]
+        if unknown:
+            ap.error(f"unknown event(s): {', '.join(unknown)}; known: {', '.join(EVENTS)}")
 
-    from huggingface_hub import hf_hub_download
-
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    archive_path = Path(hf_hub_download(repo_id=REPO_ID, filename=ARCHIVE))
-
-    events = [e.upper() for e in (args.events or [])]
-    layers = [l.upper() for l in (args.layers or [])]
-    keep_all = not (events or layers)
-
-    print(f"extracting {archive_path} (size ~{archive_path.stat().st_size / 1e9:.1f} GB) ...")
-    extracted = 0
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for member in tar.getmembers():
-            if not (keep_all or wanted(member.name, events, layers)):
+    out_root = Path(args.out)
+    jobs = plan(events, out_root)
+    if args.limit:
+        seen = {}
+        kept = []
+        for name, dst in jobs:
+            key = dst.parent.name + ":" + ("img" if dst.name.startswith("S1Hand") else "lab")
+            if seen.get(key, 0) >= args.limit:
                 continue
-            target = safe_path(out / member.name)
-            if not str(target).startswith(str(out.resolve())):
-                print(f"skipping unsafe path {member.name}")
-                continue
-            try:
-                tar.extract(member, path=out, filter="data")  # py >= 3.12
-            except TypeError:  # pragma: no cover - py < 3.12 has no filter=
-                tar.extract(member, path=out)
-            extracted += 1
-    print(f"extracted {extracted} files to {out}")
-    if not keep_all:
-        print(f"  filter: events={events or 'any'} layers={layers or 'any'}")
+            seen[key] = seen.get(key, 0) + 1
+            kept.append((name, dst))
+        jobs = kept
+    print(f"plan: {len(jobs)} files to fetch", end="")
+    if events:
+        print(f" for event(s): {', '.join(events)}")
+    else:
+        print(" (all events)")
 
-    if not args.no_delete_tar:
-        try:
-            size_gb = archive_path.stat().st_size / 1e9
-            archive_path.unlink()
-            print(f"deleted tar {archive_path.name} (~{size_gb:.1f} GB) from HF cache")
-        except OSError as exc:  # pragma: no cover - cache may be read-only
-            print(f"note: could not delete tar: {exc}")
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        futures = {ex.submit(download_one, name, dst): dst for name, dst in jobs}
+        done = 0
+        for fut in futures:
+            fut.result()
+            done += 1
+            if done % 100 == 0 or done == len(futures):
+                print(f"  {done}/{len(futures)} files")
 
-    s1 = sorted(out.rglob("S1Hand_*.tif"))
-    print(f"kept {len(s1)} S1Hand image chips (with label pairs) under {out}")
-    if args.layers and "S1Hand" not in args.layers:
-        print("  (S1Hand not requested, so the chip count above may be 0)")
+    print("\nsummary:")
+    for sub in ("WeakLabeled", "HandLabeled"):
+        s1 = sorted((out_root / sub).glob("S1Hand_*.tif"))
+        lab = sorted((out_root / sub).glob("LabelHand_*.tif"))
+        print(f"  {sub}: {len(s1)} S1Hand images / {len(lab)} LabelHand labels")
+    print(f"  total chips: {len(list(out_root.glob('*/S1Hand_*.tif')))}")
+
+    # verify against the authors' metadata for the requested events
+    for ev in events:
+        want_tr, want_val = EVENTS[ev]
+        tr = len(list((out_root / "WeakLabeled").glob(f"S1Hand_{ev}_*.tif")))
+        va = len(list((out_root / "HandLabeled").glob(f"S1Hand_{ev}_*.tif")))
+        ok_tr = "OK" if tr in (0, want_tr) else "MISMATCH"
+        ok_va = "OK" if va in (0, want_val) else "MISMATCH"
+        print(f"  {ev}: train(weak)={tr} (expect {want_tr}) {ok_tr} | "
+              f"val(hand)={va} (expect {want_val}) {ok_va}")
 
 
 if __name__ == "__main__":

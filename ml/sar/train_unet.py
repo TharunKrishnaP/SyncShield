@@ -83,7 +83,9 @@ class SyntheticSAR(Dataset):
             band = img[b]
             lo, hi = np.percentile(band, 1), np.percentile(band, 99)
             img[b] = np.clip((band - lo) / max(hi - lo, 1e-6), 0, 1)
-        return torch.tensor(img), torch.tensor(mask).unsqueeze(0)
+        mask_t = torch.tensor(mask).unsqueeze(0)
+        weight = torch.ones_like(mask_t)
+        return torch.tensor(img), mask_t, weight
 
 
 def _fold(name: str, val_frac: float = 0.15) -> int:
@@ -92,11 +94,19 @@ def _fold(name: str, val_frac: float = 0.15) -> int:
 
 
 class Sen1Floods11(Dataset):
-    """Real tiles from the extracted Sen1Floods11 directory.
+    """Real tiles from the canonical GCS layout (download_sen1floods11.py).
 
-    Uses S1Hand (VV/VH) + Label .tif pairs. Label: 2 = water -> mask 1.
-    ``partition`` splits chips deterministically by filename hash so the
-    validation set is genuinely held-out (never trained on).
+    Two pools are fetched per event:
+      WeakLabeled/  - auto Otsu water labels (train pool, per dataset metadata)
+      HandLabeled/  - human QC water labels (val pool, per dataset metadata)
+
+    S1 imagery is 2-band float32 dB (VV/VH); labels are int16 with the
+    canonical Sen1Floods11 encoding: 1 = water, -1 = no data (masked out of
+    the loss via the returned weight), 0 = not water. ``partition`` selects
+    the pool: "train" -> WeakLabeled, "val" -> HandLabeled. This is the
+    dataset's own geographic split (no chip-id overlap), so validation is
+    genuinely held-out. If the two-pool layout is absent it falls back to a
+    deterministic 85/15 chip-id hash split.
     """
 
     SPLIT_VAL_FRAC = 0.15
@@ -107,23 +117,45 @@ class Sen1Floods11(Dataset):
         self.size, self.rng = size, random.Random(seed)
         self.augment = augment
         data_dir = Path(data_dir)
-        pairs = []
-        for tif in sorted(data_dir.glob("**/S1Hand_*.tif")):
-            cands = [
-                tif.with_name(tif.name.replace("S1Hand", "Label")),
-                tif.with_name("Label" + tif.name[len("S1Hand_"):]),
-                tif.with_name(tif.name.replace("S1", "Label")),
-            ]
-            lab = next((p for p in cands if p.exists()), None)
-            if lab is not None:
-                pairs.append((str(tif), str(lab)))
-        if partition == "train":
-            thresh = self.SPLIT_VAL_FRAC * 100
-            pairs = [p for p in pairs if _fold(Path(p[0]).name) >= thresh]
-        elif partition == "val":
-            thresh = self.SPLIT_VAL_FRAC * 100
-            pairs = [p for p in pairs if _fold(Path(p[0]).name) < thresh]
-        self.pairs = pairs
+        self.split_note = ""
+
+        def collect(base):
+            pairs = []
+            for tif in sorted(base.glob("**/S1Hand_*.tif")):
+                cands = [
+                    tif.with_name(tif.name.replace("S1Hand", "Label")),
+                    tif.with_name("Label" + tif.name[len("S1Hand_"):]),
+                    tif.with_name(tif.name.replace("S1", "Label")),
+                ]
+                lab = next((p for p in cands if p.exists()), None)
+                if lab is not None:
+                    pairs.append((str(tif), str(lab)))
+            return pairs
+
+        weak_dir = data_dir / "WeakLabeled"
+        hand_dir = data_dir / "HandLabeled"
+        weak_pairs = collect(weak_dir)
+        hand_pairs = collect(hand_dir)
+        if weak_pairs and hand_pairs:
+            # canonical dataset split: train on weak labels, val on hand labels
+            self.split_note = "canonical split (train=WeakLabeled, val=HandLabeled)"
+            if partition == "train":
+                self.pairs = weak_pairs
+            elif partition == "val":
+                self.pairs = hand_pairs
+            else:
+                self.pairs = weak_pairs + hand_pairs
+        else:
+            # fallback: 85/15 hash split over everything
+            self.split_note = "85/15 chip-id hash split (fallback)"
+            pairs = collect(data_dir)
+            if partition == "train":
+                thresh = self.SPLIT_VAL_FRAC * 100
+                pairs = [p for p in pairs if _fold(Path(p[0]).name) >= thresh]
+            elif partition == "val":
+                thresh = self.SPLIT_VAL_FRAC * 100
+                pairs = [p for p in pairs if _fold(Path(p[0]).name) < thresh]
+            self.pairs = pairs
         self.rasterio = rasterio
         assert self.pairs, f"no S1Hand/Label pairs for partition='{partition}' under {data_dir}"
 
@@ -137,7 +169,10 @@ class Sen1Floods11(Dataset):
             arr = src.read(out_shape=(2, size, size)).astype(np.float32)
         with self.rasterio.open(lab_path) as src:
             lab = src.read(1, out_shape=(size, size)).astype(np.float32)
-        mask = (lab == 2).astype(np.float32)
+        # Canonical Sen1Floods11 encoding: 1 = water, -1 = no data (excluded
+        # from the loss via the weight), 0 = not water.
+        mask = (lab == 1).astype(np.float32)
+        weight = (lab != -1).astype(np.float32)
         # normalise per-band percentile
         for b in range(arr.shape[0]):
             lo, hi = np.percentile(arr[b], 1), np.percentile(arr[b], 99)
@@ -146,10 +181,12 @@ class Sen1Floods11(Dataset):
             if self.rng.random() < 0.5:
                 arr = arr[:, :, ::-1].copy()
                 mask = mask[:, ::-1].copy()
+                weight = weight[:, ::-1].copy()
             if self.rng.random() < 0.5:
                 arr = arr[:, ::-1, :].copy()
                 mask = mask[:, ::-1].copy()
-        return torch.tensor(arr), torch.tensor(mask).unsqueeze(0)
+                weight = weight[:, ::-1].copy()
+        return torch.tensor(arr), torch.tensor(mask).unsqueeze(0), torch.tensor(weight).unsqueeze(0)
 
 
 def make_model(encoder: str, in_channels: int, pretrained: bool):
@@ -162,8 +199,11 @@ def make_model(encoder: str, in_channels: int, pretrained: bool):
     )
 
 
-def iou_dice(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-6):
+def iou_dice(pred: torch.Tensor, target: torch.Tensor, weight: torch.Tensor = None, eps: float = 1e-6):
     pred = (pred > 0.5).float()
+    if weight is not None:
+        pred = (pred * weight).float()
+        target = target * weight
     inter = (pred * target).sum(dim=(1, 2, 3))
     union = pred.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3))
     iou = (inter + eps) / (union - inter + eps)
@@ -175,10 +215,10 @@ def evaluate(model, loader, device):
     model.eval()
     ious, dices = [], []
     with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
+        for x, y, w in loader:
+            x, y, w = x.to(device), y.to(device), w.to(device)
             logits = model(x)
-            lo, do = iou_dice(torch.sigmoid(logits), y)
+            lo, do = iou_dice(torch.sigmoid(logits), y, w)
             ious.append(lo)
             dices.append(do)
     model.train()
@@ -197,26 +237,28 @@ def train(args):
         train_ds = Sen1Floods11(args.data_dir, size=args.size, seed=1, augment=True, partition="train")
         val_ds = Sen1Floods11(args.data_dir, size=args.size, seed=2, augment=False, partition="val")
         pretrained = True
-        print(f"sen1floods11 tiles: train={len(train_ds)} val={len(val_ds)} "
-              f"(deterministic {100 - int(Sen1Floods11.SPLIT_VAL_FRAC * 100)}/"
-              f"{int(Sen1Floods11.SPLIT_VAL_FRAC * 100)} split by chip-id hash)")
+        print(f"sen1floods11 tiles: train={len(train_ds)} val={len(val_ds)}")
+        print(f"  split: {train_ds.split_note}")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
     model = make_model(args.encoder, args.in_channels, pretrained).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = torch.nn.BCEWithLogitsLoss()
 
     best_iou, best_dice, best_state = 0.0, 0.0, None
     started = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
         run_loss, steps = 0.0, 0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
+        for x, y, w in train_loader:
+            x, y, w = x.to(device), y.to(device), w.to(device)
             opt.zero_grad()
-            loss = loss_fn(model(x), y)
+            # weighted BCE: pixels with weight 0 (Sen1Floods11 -1 no-data)
+            # contribute nothing
+            loss = F.binary_cross_entropy_with_logits(
+                model(x), y, reduction="none") * w
+            loss = loss.sum() / w.sum().clamp(min=1.0)
             loss.backward()
             opt.step()
             run_loss += loss.item()
@@ -247,7 +289,11 @@ def train(args):
             "synthetic mode = pipeline certification only, NOT a production model; "
             "run --mode sen1floods11 on Colab for the real model + IoU"
             if args.mode == "synthetic"
-            else "trained on Sen1Floods11 via ml/sar/train_colab.ipynb"
+            else (
+                "trained on Sen1Floods11 India (canonical split: train=WeakLabeled "
+                "Otsu labels, val=HandLabeled human QC) via ml/sar/train_colab.ipynb; "
+                "labels encoded 1=water, -1=no-data masked from loss"
+            )
         ),
     }
     with open(out / "meta.json", "w", encoding="utf-8") as fh:

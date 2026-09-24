@@ -29,8 +29,12 @@ with the third (river forecasting) scaffolded for Phase 2.
   Regex extractor stays as fallback + location/severity extraction.
 
 ### 2. Sentinel-1 SAR flood U-Net (C)
-- **Data**: Sen1Floods11 (cc-by-4.0) from the Hugging Face mirror
-  `harshinde/sen1floods` — 4851 tiles, train/validation/test splits.
+- **Data**: Sen1Floods11 (cc-by-4.0) from the canonical public GCS bucket
+  `sen1floods11` — 535 India-event chips (467 weakly-labeled train + 68
+  hand-labeled val, the dataset's own split). The old HF mirror
+  (`harshinde/sen1floods`) now 401s anonymous downloads, so
+  `sar/download_sen1floods11.py` fetches the exact files it needs directly
+  from GCS (no auth, no ~35 GB tar).
 - **Model**: U-Net with a pretrained vision backbone (segmentation-models.pytorch),
   trained on the T4 (Colab notebook `sar/train_colab.ipynb`).
 - **Test**: IoU on the Sen1Floods11 test split; the inference script
