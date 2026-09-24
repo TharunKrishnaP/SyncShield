@@ -28,7 +28,7 @@ pools and renames them into the layout ``train_unet.py`` reads:
     <out>/WeakLabeled/S1Hand_India_<id>.tif + LabelHand_India_<id>.tif   (train pool)
     <out>/HandLabeled/S1Hand_India_<id>.tif + LabelHand_India_<id>.tif   (val pool)
 
-``train_unet.py --mode sen1floods11`` then trains on WeakLabeled and validates
+``train_unet.py --data-dir <sen1floods11-root>`` then trains on WeakLabeled and validates
 on HandLabeled - the dataset's own split, so the reported val IoU is on chips
 and labels the model never saw (no leak).
 

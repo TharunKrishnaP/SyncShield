@@ -91,7 +91,7 @@ class SARSegmentationModel:
             return {
                 "available": False,
                 "artifacts_dir": str(_ARTIFACTS),
-                "note": "Train the U-Net first: ml/sar/train_colab.ipynb (Colab) or --mode synthetic for a pipeline-certified smoke model.",
+                "note": "Train the U-Net first: ml/sar/train_colab.ipynb (Colab) or local CPU with ml/sar/train_unet.py --data-dir.",
             }
         return {
             "available": True,

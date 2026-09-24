@@ -232,7 +232,7 @@ handles location, severity and acts as the fallback. Live proof:
 Goal: segment flood water in SAR backscatter and fuse real extents into the
 0.35 satellite weight (real-time mode).
 
-### 5.1 Training (Sen1Floods11 via HF mirror, Colab T4)
+### 5.1 Training (Sen1Floods11 via public GCS bucket; Colab T4 or local CPU)
 
 ```
 ┌───────────────────────────┐
@@ -243,30 +243,33 @@ Goal: segment flood water in SAR backscatter and fuse real extents into the
    Chips: 2-band S1, percentile-normalised, flips (S2 unused in Phase 1)
              ▼
    U-Net (encoder resnet18, pretrained imagenet; in=2, out=1)
-   BCEWithLogits + Adam + LR 1e-3
+   BCEWithLogits (pos-weight 8) + Adam (LR 3e-4) + grad-clip 1.0
              ▼
    Evaluate: mask IoU & Dice on held-out tiles
              ▼
    Artifacts: model.pt + meta.json (arch config + val IoU/Dice)
 ```
 
-`train_unet.py --mode synthetic` certifies the whole chain on any machine
-(no GPU); `--mode sen1floods11` is the real training path (Colab notebook
-`ml/sar/train_colab.ipynb`). The real run uses the dataset's single India
-event (2016 Assam, 535 chips) — `download_sen1floods11.py --events India`
-fetches from the public GCS bucket (~0.9 GB, no auth): 467 weakly-labeled
-chips (Otsu auto labels) as train + 68 hand-labeled chips (human QC labels)
-as validation, the dataset's own split, for an honest held-out IoU.
+`train_unet.py --data-dir ml/data/sen1floods11` is the real training path (Colab notebook
+`ml/sar/train_colab.ipynb`, or locally on CPU with `--data-dir ml/data/sen1floods11`).
+The real run uses the dataset's single India event (2016 Assam, 535 chips) —
+`download_sen1floods11.py --events India` fetches from the public GCS bucket
+(~0.9 GB, no auth): 467 weakly-labeled chips (Otsu auto labels) as train + 68
+hand-labeled chips (human QC labels) as validation, the dataset's own split,
+for an honest held-out IoU. **No synthetic data is used anywhere in the
+pipeline** — every claim is backed by real Sentinel-1 chips.
 
-Latest local certification (CPU, 2026-09-24, ~17 min, `ml/artifacts/sar_unet/meta.json`):
-260 synthetic chips × 12 epochs, 2 bands percentile-normalised, per-pixel
-speckle + 1–4 water ellipses (geometry/distribution matched to
-`make_synthetic_scene.py`) → **best-epoch val IoU 0.9647 / val Dice 0.9817**.
-Inference on the demo scene `ml/data/sar_scenes/scene_patna.tif` (16.8 % water
-ground truth) returns predicted ratio 0.168 → **99.84 km², ABOVE_NORMAL,
-confidence 0.79**, attributed to BR-Patna (Bihar) — the numbers a fresh run of
-`POST /api/ai/sar/ingest` reproduces. Honest label everywhere: *synthetic =
-pipeline certification only, NOT a production model*.
+Real-data certification (this repo, `ml/artifacts/sar_unet/meta.json`):
+real India chips × N epochs, 2 bands percentile-normalised, resnet18 U-Net
+(BCE pos-weight 8, Adam LR 3e-4, grad-clip 1.0 — the first real attempt at
+plain BCE/LR 1e-3 diverged to NaN and was rejected fail-soft) → **val IoU/Dice
+on held-out chips** (canonical WeakLabeled-train/HandLabeled-val split when
+the full download is present; otherwise a deterministic 85/15 chip-id hash
+split over the real chips on disk — the meta.json `note` records which).
+Inference on the real demo scene
+`ml/data/sar_scenes/scene_india_assam.tif` (a real Sentinel-1 tile, ~10 m/px)
+returns the flood extent attributed to an Assam zone (AS-Biswanath) — the
+numbers a fresh run of `POST /api/ai/sar/ingest` reproduces.
 
 ### 5.2 Inference → extents → scorer
 
@@ -294,8 +297,8 @@ scene GeoTIFF (Sentinel-1, VV/VH)
 
 Express endpoint: `POST /api/ai/sar/ingest` (upload scene → extents persisted →
 orchestrator picks them up in real-time mode; source registry updates to LIVE).
-With the local synthetic model present the endpoint is live; the wrapper
-reloads artifacts on mtime change, so a Colab retrain dropped into
+With the local real-data model present the endpoint is live; the wrapper
+reloads artifacts on mtime change, so a retrain dropped into
 `ml/artifacts/sar_unet` is served without a backend restart. Fail-soft: without
 artifacts the endpoint returns 501 with the training pointer.
 

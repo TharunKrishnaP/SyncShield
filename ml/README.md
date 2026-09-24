@@ -7,7 +7,7 @@ with the third (river forecasting) scaffolded for Phase 2.
 | Model | Status (Phase 1) | Artifacts | Metrics (see `artifacts/*/metrics.json`) |
 |---|---|---|---|
 | **D — incident text classifier** | ✅ Trained + live in backend | `artifacts/text_classifier/` | Gold (unseen hand-written set, n=59): accuracy **0.78**, macro-F1 **0.79** — see `EVIDENCE_SHEET.md` |
-| **C — Sentinel-1 SAR flood U-Net** | 🔶 Pipeline complete + synthetic cert; full IoU training = Colab notebook | `artifacts/sar_unet/` (from Colab) | IoU on Sen1Floods11 held-out (reported in `meta.json`) |
+| **C — Sentinel-1 SAR flood U-Net** | ✅ Trained on **real** Sen1Floods11 India data (467 weak / 68 hand, GCS) | `artifacts/sar_unet/` | IoU on Sen1Floods11 held-out (reported in `meta.json`) |
 | **A — river-level forecaster** | ⏳ Phase 2 (scaffold in `forecast/`) | — | NSE/MAE vs GloFAS baseline |
 | **Learned fusion / calibration** | ⏳ Phase 2 (`fusion/` scaffold) | — | calibration vs. history lake |
 
@@ -39,10 +39,10 @@ with the third (river forecasting) scaffolded for Phase 2.
   trained on the T4 (Colab notebook `sar/train_colab.ipynb`).
 - **Test**: IoU on the Sen1Floods11 test split; the inference script
   `sar/infer.py` polygonises the water mask into GeoJSON extents for the map.
-- **Local**: `sar/train_unet.py --mode synthetic` trains a few epochs on
-  synthetic SAR-like tiles so the full train→infer→polygonise chain is certified
-  on any machine (CI-safe); it is *not* a production model — the Colab notebook
-  (`--mode sen1floods11`) produces the real IoU numbers.
+- **Local**: `sar/train_unet.py --data-dir ml/data/sen1floods11` trains the
+  real model on CPU (a few hours at size 128) — no synthetic data anywhere.
+  `--mode synthetic` is removed from the pipeline: every claim in the demo is
+  backed by real Sentinel-1 chips and measured on held-out human-QC labels.
 - **Integration**: `backend/app/ml/sar_model.py` → scene ingest endpoint →
   `datalake` → `satellite_map` in the orchestrator (fills the 0.35 satellite
   weight with real ML extents instead of 0).
@@ -58,7 +58,7 @@ from history-lake outcomes instead of hand-picking; re-calibrate severity bands.
 ## Reproduce
 ```
 python ml/text/build_corpus.py && python ml/text/train_svc.py   # D — reproducible in seconds
-python ml/sar/train_unet.py --mode synthetic  # C — pipeline certification (no GPU)
-# real U-Net: run sar/train_colab.ipynb on a free Colab T4
+python ml/sar/download_sen1floods11.py --out ml/data/sen1floods11 --events India  # real data
+python ml/sar/train_unet.py --data-dir ml/data/sen1floods11 --size 128  # real U-Net (CPU)
 ```
 Measured results: `EVIDENCE_SHEET.md` (top of the mL workspace).

@@ -58,24 +58,36 @@ relief-operations message → RELIEF_SHELTER_FULL).
   `-1 = no data` (masked out of the loss). Weak labels are the Otsu water mask
   (`{0,1}`), hand labels are human QC (`{-1,0,1}`).
 - **Model**: U-Net, encoder resnet18 (imagenet-pretrained), in=2, out=1,
-  weighted BCE-with-logits + Adam, LR 1e-3.
+  weighted BCE-with-logits + Adam, LR 3e-4, grad-clip 1.0, pos-weight 8.0
+  (run #1 at plain BCE/lr-1e-3 diverged to all-NaN weights — see note below).
 - **Training**: `ml/sar/train_colab.ipynb` on a free T4
-  (`train_unet.py --mode sen1floods11`) → val IoU/Dice reported in
+  (`train_unet.py --data-dir ml/data/sen1floods11`) → val IoU/Dice reported in
   `ml/artifacts/sar_unet/meta.json`. Split = the **dataset's own geographic
   split** (`Sen1Floods11(partition=...)`: train reads WeakLabeled, val reads
   HandLabeled; chip-id sets are disjoint by construction), so the reported val
-  IoU is on hand-QC chips/labels the model never saw — no leak.
-- **Local certification — LIVE (2026-09-24, CPU, ~17 min)**:
-  `train_unet.py --mode synthetic` — 260 chips × 12 epochs, 2-band VV/VH
-  percentile-normalised, per-pixel speckle + 1–4 water ellipses (distribution
-  matched to `make_synthetic_scene.py`); best-epoch **val IoU 0.9647 /
-  val Dice 0.9817** (`ml/artifacts/sar_unet/meta.json`). The demo scene
-  (`scene_patna.tif`, 16.8 % water) segments to a 0.168 ratio →
-  **99.84 km², ABOVE_NORMAL, confidence 0.79**, zone BR-Patna (Bihar) — produced
-  live via `POST /api/ai/sar/ingest` and rendered on the dashboard map
-  (`data_source ML_SAR_UNET`). Claude-to-reviewer honesty: *synthetic &
-  CPU-certified only — NOT a production model; the Colab path replaces the
-  artifacts and the backend serves them unchanged (mtime reload).*
+  IoU is on hand-QC chips/labels the model never saw — no leak. *Bandwidth
+  note: if the HandLabeled pool is not downloaded (e.g. a data-cap-constrained
+  quick local run), the loader falls back to a deterministic 85/15 chip-id
+  hash split over the real chips present — still held-out, still real data,
+  and the meta.json `note` records which split was used.*
+- **Real run #1 (2026-09-24, T4) — DIVERGED, artifact rejected**: the first
+  real-data attempt (plain BCE, lr 1e-3, no clipping) produced
+  `val_iou 0.0417` and a state dict that was ~99.96 % NaN (training blew up;
+  some Sen1Floods11 tiles contain NaN/Inf pixels and the sparse ~1 % water
+  class collapsed to all-background). The NaN checkpoint was **not** deployed
+  into the demo. Run #2 uses the hardened recipe above (non-finite pixel
+  sanitising in the loader, LR 3e-4, grad-clip 1.0, pos-weight 8.0) and the
+  trainer now fails **soft** (diverged.log sidecar, existing good artifacts
+  preserved) instead of overwriting them with a NaN model.
+- **Local certification — LIVE (this repo, CPU, real data)**:
+  `train_unet.py --data-dir ml/data/sen1floods11 --size 128`
+  — trains on the **real** India chips from the public GCS bucket; measured
+  **val IoU / val Dice** reported in `ml/artifacts/sar_unet/meta.json`. The
+  demo scene is itself a real Sentinel-1 tile (`scene_india_assam.tif`,
+  ~10 m/px, Assam, from the HandLabeled pool — reproducible with
+  `ml/sar/mk_real_scene.py`, so no synthetic scene generator exists) —
+  produced live via `POST /api/ai/sar/ingest` (`data_source ML_SAR_UNET`).
+  No synthetic data anywhere.
 - **Integration**: `POST /api/ai/sar/ingest` (scene upload) → extent records
   (zone_id, flood_area_km2, water_depth_avg, flood_status, polygons,
   data_source "ML_SAR_UNET") → datalake → orchestrator feeds the 0.35

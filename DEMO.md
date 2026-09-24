@@ -65,40 +65,45 @@ risk score, recommendation). `/api/brief` — AI-written national brief.
 
 ## 4. SAR U-Net — live flood-extent prediction (3 min)
 
-Model C, certified locally (CPU) + Colab path for the real training.
+Model C — trained on **real** Sen1Floods11 India data (467 weak-label train /
+68 human-QC val, the dataset's own geographic split — no synthetic data).
 
-Current certified run (CPU, 2026-09-24): **val IoU 0.9647 / val Dice 0.9817**
-(synthetic VV/VH chips, 260 × 12 epochs — see `ml/EVIDENCE_SHEET.md` §C).
+Current artifacts (`ml/artifacts/sar_unet/meta.json`): real-data run on this
+repo, **val IoU / val Dice** as measured on the 68 held-out hand-labeled chips
+(see number in the models panel below).
 
 1. **Models panel:** `GET /api/ai/models` → `sar_unet.available: true` with
-   `val_iou 0.9647`, `val_dice 0.9817`, `mode: synthetic` and the honesty note.
-2. **Run inference:** upload the demo scene to the trained U-Net:
+   `val_iou`/`val_dice` from the real run, `mode: sen1floods11` and the
+   honesty note (`ml/artifacts/sar_unet/meta.json`).
+2. **Run inference:** upload the real Sentinel-1 demo scene to the trained U-Net:
    ```
    curl.exe -X POST http://localhost:8000/api/ai/sar/ingest ^
-     -F "photo=@ml/data/sar_scenes/scene_patna.tif"
+     -F "photo=@ml/data/sar_scenes/scene_india_assam.tif"
    ```
-   → returns the extent record: zone `BR-Patna`, **`flood_area_km2 ≈ 99.84`**,
-   `water_depth_avg 0.82`, `flood_status ABOVE_NORMAL`, `confidence 0.79`,
-   `flood_pixel_ratio 0.168`, `flood_polygons` (one polygon), `data_source:
-   ML_SAR_UNET`.
-3. **Inspected state:** `GET /api/ai/sar/extents` — `count: 1`,
-   `zones: ["BR-Patna"]`, `total_flood_area_km2: 99.84`.
-4. **On the dashboard:** the map renders the **ML prediction** for BR-Patna
-   (polygon popup: *“ML U-Net Flood Extent (Sentinel-1) · Source: trained
-   U-Net · confidence 0.79”*). The orchestrator replaces the modelled/sim
+   → returns the extent record: zone **AS-Biswanath (Assam)**, `flood_area_km2`
+   as predicted, `flood_status`, `confidence`, `flood_polygons`,
+   `data_source: ML_SAR_UNET`.
+3. **Inspected state:** `GET /api/ai/sar/extents` — count + zones + total area.
+4. **On the dashboard:** the map renders the **ML prediction** for the Assam
+   zone (polygon popup: *“ML U-Net Flood Extent (Sentinel-1) · Source: trained
+   U-Net · confidence …”*). The orchestrator replaces the modelled/sim
    extent for covered zones with the `ML_SAR` output (sim skips those zones,
    ML extents are appended last so the frontend's per-zone dedupe keeps the
    model's result) — the zone's satellite evidence + severity reflect live
    model output, not just the scenario.
-5. **Honesty slide:** this run is a *synthetic-scene pipeline certification*
-   (2-band VV/VH stand-ins trained on CPU). The real model trains for free on
-   Colab T4 via `ml/sar/train_colab.ipynb` from Sen1Floods11 — scoped to the
-   dataset's single India event (2016 Assam, 535 chips; `download_sen1floods11.py
-   --events India` from the public GCS bucket, ~0.9 GB) using the dataset's own
-   split: 467 weakly-labeled chips as train + 68 hand-labeled chips as
-   validation, for an honest held-out IoU. The same code paths (`infer.py`,
-   `sar_model.py`) serve it unchanged — the backend hot-reloads new artifacts
-   by file mtime, no restart.
+5. **Honesty slide:** the model is trained end-to-end on **real** Sentinel-1
+   chips (Sen1Floods11 India event, 2016 Assam; public GCS bucket). Training
+   uses the dataset's own split when the full download is present — 467
+   weakly-labeled chips train + 68 hand-labeled chips (human QC) validate, so
+   the reported val IoU is on labels the model never saw. On a data-cap
+   constrained machine the loader falls back to a deterministic 85/15 chip-id
+   hash split over the real chips on disk (the meta.json `note` records which
+   split was used) — still held-out, still real data. No synthetic data is
+   used anywhere. The
+   demo scene is itself a real Sentinel-1 tile (`scene_india_assam.tif`,
+   ~10 m/px, copied from the HandLabeled pool via `ml/sar/mk_real_scene.py`).
+   Same code paths (`infer.py`, `sar_model.py`) serve it unchanged
+   — the backend hot-reloads new artifacts by file mtime, no restart.
 
 ## 5. The AI/ML story (3 min) — Rubric links
 
@@ -110,8 +115,8 @@ Current certified run (CPU, 2026-09-24): **val IoU 0.9647 / val Dice 0.9817**
   fusion), docstrings + commented formulas, `ml/EVIDENCE_SHEET.md` numbers.
 - **50% live demo (15 marks):** items 1–4 above (dashboard + live feeds +
   trained classifier + routing + brief + **live SAR inference** + sources) plus
-  the honest ML status: D trained & live; C certified locally + Colab path for
-  real training + integration live; A scaffolded Phase 2.
+  the honest ML status: D trained & live; C trained on **real** data & live
+  integration; A scaffolded Phase 2.
 
 ## Talking points (honesty is a grading advantage)
 
