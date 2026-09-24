@@ -15,7 +15,7 @@ from .ingestion.weather_client import WeatherClient, IMDClient
 from .ingestion.river_gauges import RiverGaugeService, NWDP_KEY
 from .ingestion.flood_forecast import FloodForecastClient
 from .ingestion.official_alerts import OfficialAlertsClient
-from .ingestion.source_registry import registry, REFERENCE, NEEDS_KEY, UNAVAILABLE, SIMULATED
+from .ingestion.source_registry import registry, REFERENCE, NEEDS_KEY, UNAVAILABLE, SIMULATED, LIVE
 from .ingestion.official_connectors import official_connectors, auto_register_bulletin_source
 from .ingestion.map_tiles import map_tiles
 from .ingestion.sar_satellite import SARProcessor, BhoonidhiClient, NDMPortalClient
