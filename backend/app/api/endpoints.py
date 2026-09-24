@@ -194,8 +194,15 @@ async def map_layers():
         })
 
     infra = dl.list("infrastructure")
+    # Modelled/simulated extents fill the most-recent-25 slots; ML U-Net
+    # extents are appended LAST so the frontend's per-zone dedupe
+    # (last entry wins) always keeps the trained model's prediction.
+    all_extents = dl.get_satellite_extents()
+    ml_extents = [e for e in all_extents if (e.get("data_source") or "").startswith("ML_SAR")]
+    ml_ids = {e.get("id") for e in ml_extents}
+    other_extents = [e for e in all_extents if e.get("id") not in ml_ids][-25:]
     return {
-        "satellite_extents": dl.get_satellite_extents()[-25:],
+        "satellite_extents": other_extents + ml_extents,
         "zones_geojson": dl.zones_all(),
         "infrastructure": infra,
         "routes": state.get("routes", []),

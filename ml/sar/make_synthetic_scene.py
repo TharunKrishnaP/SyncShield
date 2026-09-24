@@ -37,26 +37,15 @@ def make_scene(zone, out_path: Path, size: int = 256, water_frac: float = 0.18, 
 
     mask = np.zeros((size, size), dtype=np.float32)
     cx, cy = size // 2, size // 2
-    rx, ry = int(size * 0.22), int(size * 0.10)
+    # size the ellipse so its area is the requested flood fraction:
+    # area_ellipse = pi*rx*ry = water_frac * size^2
+    ry = int(size * 0.10)
+    rx = int(round((water_frac * size * size) / (np.pi * ry)))
     y, x = np.mgrid[0:size, 0:size]
     blob = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
     mask[blob] = 1.0
     for b in range(2):
         img[b][blob] += rng.uniform(-6.0, -2.5)
-
-    # Ensure roughly the requested flooded fraction.
-    ratio = mask.mean()
-    if ratio > water_frac:
-        # shrink the blob until it fits the target fraction
-        best, best_mask = ratio, mask
-        for k in range(1, 6):
-            rr = rx * (1 - 0.15 * k)
-            m = ((x - cx) / rr) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
-            if abs(m.mean() - water_frac) < abs(best - water_frac):
-                best, best_mask = m.mean(), m
-        mask = best_mask.astype(np.float32)
-        for b in range(2):
-            img[b][mask == 1] += rng.uniform(-6.0, -2.5)
 
     lon, lat = zone["centroid"]
     # geotransform: top-left corner offset by half the scene extent; ~pixel_m metres/px

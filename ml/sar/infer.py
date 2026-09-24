@@ -6,7 +6,9 @@ zone attribution. Kept dependency-light: imports torch/rasterio/shapely only
 when a function that needs them is called.
 """
 import json
+import math
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -24,6 +26,7 @@ def load_scene_array(scene_path: str, size: int = 256, bands: int = 2) -> Dict[s
     import rasterio
 
     with rasterio.open(scene_path) as src:
+        native_h, native_w = src.height, src.width
         count = min(src.count, bands)
         arr = src.read(out_shape=(count, size, size), indexes=list(range(1, count + 1))).astype(np.float32)
         if count < bands:
@@ -34,7 +37,11 @@ def load_scene_array(scene_path: str, size: int = 256, bands: int = 2) -> Dict[s
     for b in range(arr.shape[0]):
         lo, hi = np.percentile(arr[b], 1), np.percentile(arr[b], 99)
         arr[b] = np.clip((arr[b] - lo) / max(hi - lo, 1e-6), 0, 1)
-    return {"array": arr, "transform": transform, "crs": crs, "count": count}
+    # Effective ground-sample size after any resampling to ``size`` px: the
+    # resampled grid covers the same geographic extent as the native raster, so
+    # the pixel size grows by native/out.
+    scale = (native_w / size, native_h / size)
+    return {"array": arr, "transform": transform, "crs": crs, "count": count, "native_size": (native_h, native_w), "pixel_scale": scale}
 
 
 def predict_mask(model, scene_path: str, size: int = 256, threshold: float = 0.5) -> np.ndarray:
@@ -78,17 +85,62 @@ def mask_to_polygons(mask: np.ndarray, transform, simplify_tol: float = 0.001):
     return [list(p.exterior.coords) for p in polys if p.geom_type == "Polygon" and not p.is_empty]
 
 
+def clean_mask(mask: np.ndarray, transform, min_px: int = 16) -> np.ndarray:
+    """Drop small connected components (speckle) from a predicted mask.
+
+    Keeps the polygon list and the reported area honest: single-pixel noise
+    from an imperfect model does not survive — only water bodies of at least
+    ``min_px`` pixels do. Component detection reuses rasterio's shapes pass, so
+    no scipy dependency is introduced.
+    """
+    from rasterio import features
+    from shapely.geometry import shape as _shape
+
+    if mask.sum() == 0 or transform is None or transform.is_identity:
+        return mask
+    px_area = abs(transform.a * transform.e)
+    if px_area <= 0:
+        return mask
+    kept = np.zeros_like(mask)
+    for poly, val in features.shapes(mask.astype(np.uint8), mask=mask.astype(bool), transform=transform):
+        if val != 1:
+            continue
+        try:
+            shp = _shape(poly)
+        except Exception:
+            continue
+        if shp.area / px_area >= min_px:
+            kept = np.maximum(
+                kept,
+                features.rasterize([shp], out_shape=mask.shape, transform=transform, fill=0, default_value=1),
+            )
+    return kept
+
+
 def build_extent(mask: np.ndarray, data: Dict[str, Any], source_scene: str) -> Optional[Dict[str, Any]]:
     """Turn mask + scene meta into an extent record (no zone attribution yet)."""
     if mask.sum() == 0:
         return None
     transform = data.get("transform")
-    # pixel ground size (m); default 10 m for synthetic/unreferenced
+    crs = data.get("crs")
+    # ground sample size after any resampling so reported area matches the
+    # raster's true geographic extent
+    scale = data.get("pixel_scale") or (1.0, 1.0)
     if transform and not transform.is_identity:
-        px = abs(transform.a)
-        py = abs(transform.e)
+        dx = abs(transform.a) * scale[0]  # ground size of one mask pixel, x
+        dy = abs(transform.e) * scale[1]  # ground size of one mask pixel, y
+        if crs is not None and getattr(crs, "is_geographic", False):
+            # geographic CRS: degrees — convert to metres at the scene centre
+            lat_c = transform.f + transform.e * (mask.shape[0] / 2.0)
+            px = dx * 111320.0 * math.cos(math.radians(lat_c))
+            py = dy * 111320.0
+        else:
+            # projected CRS (or unreferenced): treat transform units as metres
+            px, py = dx, dy
+        px_m = max(int(round((px + py) / 2.0)), 1)
     else:
         px = py = 10.0
+        px_m = 10
     flooded_px = int(mask.sum())
     total_px = mask.shape[0] * mask.shape[1]
     ratio = flooded_px / max(total_px, 1)
@@ -103,9 +155,9 @@ def build_extent(mask: np.ndarray, data: Dict[str, Any], source_scene: str) -> O
     bbox_px = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
 
     record = {
-        "id": f"ML-SAR-{source_scene[:8]}-{int(time.time())}",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "source_scene": source_scene,
+        "id": f"ML-SAR-{Path(source_scene).stem[:16]}-{int(time.time())}",
+        "timestamp": datetime.now().isoformat(),
+        "source_scene": Path(source_scene).name,
         "flood_pixel_ratio": round(ratio, 4),
         "flood_area_km2": round(area_km2, 2),
         "water_depth_avg": water_depth_avg,
@@ -116,7 +168,7 @@ def build_extent(mask: np.ndarray, data: Dict[str, Any], source_scene: str) -> O
         "data_source": "ML_SAR_UNET",
         "satellite": "Sentinel-1A",
         "sensor": "SAR",
-        "resolution_m": int(px),
+        "resolution_m": int(px_m),
         "processing_level": "L2 (ML segmentation)",
     }
     return record
@@ -126,6 +178,7 @@ def infer_scene(model, model_meta: Dict[str, Any], scene_path: str) -> Optional[
     """Full inference for one scene; returns an extent record with polygons."""
     size = int(model_meta.get("size", 256))
     mask, data = predict_mask(model, scene_path, size=size)
+    mask = clean_mask(mask, data.get("transform"))
     record = build_extent(mask, data, scene_path)
     if record is None:
         return None

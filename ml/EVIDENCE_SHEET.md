@@ -43,7 +43,7 @@ POST /api/ai/classify  {"text": "Ambulance stuck in water near Gandhi Ghat,
 (2 remaining are legitimately ambiguous: submerged ghat steps → FLOODED_ROAD,
 relief-operations message → RELIEF_SHELTER_FULL).
 
-## C — Sentinel-1 SAR flood U-Net (pipeline complete; full-IoU training on Colab)
+## C — Sentinel-1 SAR flood U-Net (pipeline live; full-IoU training on Colab)
 
 - **Data**: Sen1Floods11 (cc-by-4.0) via HF mirror `harshinde/sen1floods`
   (~35 GB tar; S1Hand VV/VH + water labels).
@@ -52,10 +52,17 @@ relief-operations message → RELIEF_SHELTER_FULL).
 - **Training**: `ml/sar/train_colab.ipynb` on a free T4
   (`train_unet.py --mode sen1floods11`) → val IoU/Dice reported in
   `ml/artifacts/sar_unet/meta.json`.
-- **Pipeline certification on any machine**: `python ml/sar/train_unet.py
-  --mode synthetic` trains a tiny net on synthetic SAR-like tiles and exercises
-  train → save → load → infer → polygonise → zone attribution end-to-end
-  (CI-safe; *not* a production model).
+- **Local certification — LIVE (2026-09-24, CPU, ~17 min)**:
+  `train_unet.py --mode synthetic` — 260 chips × 12 epochs, 2-band VV/VH
+  percentile-normalised, per-pixel speckle + 1–4 water ellipses (distribution
+  matched to `make_synthetic_scene.py`); best-epoch **val IoU 0.9647 /
+  val Dice 0.9817** (`ml/artifacts/sar_unet/meta.json`). The demo scene
+  (`scene_patna.tif`, 16.8 % water) segments to a 0.168 ratio →
+  **99.84 km², ABOVE_NORMAL, confidence 0.79**, zone BR-Patna (Bihar) — produced
+  live via `POST /api/ai/sar/ingest` and rendered on the dashboard map
+  (`data_source ML_SAR_UNET`). Claude-to-reviewer honesty: *synthetic &
+  CPU-certified only — NOT a production model; the Colab path replaces the
+  artifacts and the backend serves them unchanged (mtime reload).*
 - **Integration**: `POST /api/ai/sar/ingest` (scene upload) → extent records
   (zone_id, flood_area_km2, water_depth_avg, flood_status, polygons,
   data_source "ML_SAR_UNET") → datalake → orchestrator feeds the 0.35

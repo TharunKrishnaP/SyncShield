@@ -367,19 +367,34 @@ class FDROrchestrator:
 
             if settings.SIMULATION_ENABLED:
                 # Demo-only flood extents — never shown in real-time mode.
+                # Zones with a real ML U-Net prediction (ingested via
+                # /api/ai/sar/ingest) are excluded from the simulation so the
+                # ingested extent stays the latest for that zone.
+                ml_zones: set = set()
+                try:
+                    ml_zones = {
+                        e["zone_id"] for e in self.datalake.get_satellite_extents()
+                        if (e.get("data_source") or "").startswith("ML_SAR") and e.get("zone_id")
+                    }
+                except Exception:
+                    pass
                 self.sar.set_phase(step, surge)
                 satellite_live = self.sar.generate_all()
                 satellite_map: Dict[str, Dict[str, Any]] = {}
                 for s in satellite_live:
                     zid = s["zone_id"]
                     riv = zone_river_map.get(zid)
-                    keep = bool(riv and riv.get("water_level", 0) >= riv.get("warning_level", 0))
+                    keep = bool(
+                        zid not in ml_zones
+                        and riv
+                        and riv.get("water_level", 0) >= riv.get("warning_level", 0)
+                    )
                     if keep:
                         self.datalake.put_satellite_extent(s)
                         satellite_map[zid] = s
-                # Real ML U-Net predictions (ingested via /api/ai/sar/ingest)
-                # take precedence over the modelled extent for the zones they
-                # cover — visible, live ML output inside the demo.
+                # Real ML U-Net predictions take precedence over the modelled
+                # extent for the zones they cover — live ML output inside the
+                # demo (the sim above skipped those zones).
                 try:
                     ml_extents = [
                         e for e in self.datalake.get_satellite_extents()

@@ -37,18 +37,28 @@ class SARSegmentationModel:
         self._model = None
         self._meta: Optional[Dict[str, Any]] = None
         self._load_attempted = False
+        self._fingerprint: Optional[tuple] = None
 
     # ------------------------------------------------------------------
     def _load(self) -> bool:
         with self._lock:
-            if self._load_attempted:
+            meta_path = _ARTIFACTS / "meta.json"
+            model_path = _ARTIFACTS / "model.pt"
+            try:
+                fp = (meta_path.stat().st_mtime_ns, model_path.stat().st_mtime_ns)
+            except OSError:
+                fp = None
+            # Reload whenever the artifacts change on disk (e.g. a Colab or
+            # local retrain drops in new weights) so the API never serves a
+            # stale model — no backend restart needed.
+            if fp == self._fingerprint and self._load_attempted:
                 return self._model is not None
             self._load_attempted = True
+            self._fingerprint = fp
+            if fp is None:
+                self._model, self._meta = None, None
+                return False
             try:
-                meta_path = _ARTIFACTS / "meta.json"
-                model_path = _ARTIFACTS / "model.pt"
-                if not (meta_path.exists() and model_path.exists()):
-                    return False
                 self._meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 import torch
 

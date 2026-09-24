@@ -83,6 +83,8 @@ async def citizen_report(
         timestamp=datetime.now().isoformat(),
         source="CITIZEN_REPORT",
     )
+    if not incident.get("timestamp"):  # extract_incident omits it; feed sort needs it
+        incident["timestamp"] = datetime.now().isoformat()
     if latitude is not None and longitude is not None and 5 <= latitude <= 38 and 68 <= longitude <= 98:
         incident["latitude"] = latitude
         incident["longitude"] = longitude

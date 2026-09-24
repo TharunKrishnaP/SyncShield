@@ -32,12 +32,20 @@ export default function SatelliteOverlay() {
         >
           <Popup>
             <div className="text-slate-900 text-xs">
-              <div className="font-bold">Sentinel-1 SAR Flood Extent</div>
+              <div className="font-bold">
+                {e.data_source?.startsWith('ML_SAR')
+                  ? 'ML U-Net Flood Extent (Sentinel-1)'
+                  : 'Sentinel-1 SAR Flood Extent'}
+              </div>
               <div>{e.zone_id}</div>
               <div>Area: {e.flood_area_km2} km²</div>
               <div>Avg depth: {e.water_depth_avg} m</div>
               <div>Status: {e.flood_status}</div>
-              <div className="text-slate-500">Source: {e.satellite} · {e.sensor}</div>
+              <div className="text-slate-500">
+                {e.data_source?.startsWith('ML_SAR')
+                  ? `Source: trained U-Net · confidence ${e.confidence}`
+                  : `Source: ${e.satellite} · ${e.sensor}`}
+              </div>
             </div>
           </Popup>
         </Polygon>

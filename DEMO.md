@@ -63,7 +63,40 @@ Three lines worth typing into `/api/ai/classify`:
 `/api/routing/evaluate` — flood-risk route comparison (direct vs alternative,
 risk score, recommendation). `/api/brief` — AI-written national brief.
 
-## 4. The AI/ML story (3 min) — Rubric links
+## 4. SAR U-Net — live flood-extent prediction (3 min)
+
+Model C, certified locally (CPU) + Colab path for the real training.
+
+Current certified run (CPU, 2026-09-24): **val IoU 0.9647 / val Dice 0.9817**
+(synthetic VV/VH chips, 260 × 12 epochs — see `ml/EVIDENCE_SHEET.md` §C).
+
+1. **Models panel:** `GET /api/ai/models` → `sar_unet.available: true` with
+   `val_iou 0.9647`, `val_dice 0.9817`, `mode: synthetic` and the honesty note.
+2. **Run inference:** upload the demo scene to the trained U-Net:
+   ```
+   curl.exe -X POST http://localhost:8000/api/ai/sar/ingest ^
+     -F "photo=@ml/data/sar_scenes/scene_patna.tif"
+   ```
+   → returns the extent record: zone `BR-Patna`, **`flood_area_km2 ≈ 99.84`**,
+   `water_depth_avg 0.82`, `flood_status ABOVE_NORMAL`, `confidence 0.79`,
+   `flood_pixel_ratio 0.168`, `flood_polygons` (one polygon), `data_source:
+   ML_SAR_UNET`.
+3. **Inspected state:** `GET /api/ai/sar/extents` — `count: 1`,
+   `zones: ["BR-Patna"]`, `total_flood_area_km2: 99.84`.
+4. **On the dashboard:** the map renders the **ML prediction** for BR-Patna
+   (polygon popup: *“ML U-Net Flood Extent (Sentinel-1) · Source: trained
+   U-Net · confidence 0.79”*). The orchestrator replaces the modelled/sim
+   extent for covered zones with the `ML_SAR` output (sim skips those zones,
+   ML extents are appended last so the frontend's per-zone dedupe keeps the
+   model's result) — the zone's satellite evidence + severity reflect live
+   model output, not just the scenario.
+5. **Honesty slide:** this run is a *synthetic-scene pipeline certification*
+   (2-band VV/VH stand-ins trained on CPU). The real model trains for free on
+   Colab T4 via `ml/sar/train_colab.ipynb` from Sen1Floods11; the same code
+   paths (`infer.py`, `sar_model.py`) then serve it unchanged — the backend
+   hot-reloads new artifacts by file mtime, no restart.
+
+## 5. The AI/ML story (3 min) — Rubric links
 
 - **Algorithm details (5 marks):** `ALGORITHMS.md` — flowcharts + pseudo-code
   for the refresh cycle, severity fusion, text classifier (train + hybrid
@@ -71,10 +104,10 @@ risk score, recommendation). `/api/brief` — AI-written national brief.
 - **Source code (5 marks):** structure tour — `backend/app/` (api / ai_engine /
   ingestion / datalake / models / ml) and `ml/` (text / sar / forecast /
   fusion), docstrings + commented formulas, `ml/EVIDENCE_SHEET.md` numbers.
-- **50% live demo (15 marks):** items 1–3 above (dashboard + live feeds +
-  trained classifier + routing + brief + sources) plus the honest ML status:
-  D trained & live; C pipeline + Colab notebook (`ml/sar/train_colab.ipynb`) +
-  integration live; A scaffolded Phase 2.
+- **50% live demo (15 marks):** items 1–4 above (dashboard + live feeds +
+  trained classifier + routing + brief + **live SAR inference** + sources) plus
+  the honest ML status: D trained & live; C certified locally + Colab path for
+  real training + integration live; A scaffolded Phase 2.
 
 ## Talking points (honesty is a grading advantage)
 

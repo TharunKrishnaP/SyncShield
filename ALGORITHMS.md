@@ -254,6 +254,16 @@ Goal: segment flood water in SAR backscatter and fuse real extents into the
 (no GPU); `--mode sen1floods11` is the real training path (Colab notebook
 `ml/sar/train_colab.ipynb`).
 
+Latest local certification (CPU, 2026-09-24, ~17 min, `ml/artifacts/sar_unet/meta.json`):
+260 synthetic chips × 12 epochs, 2 bands percentile-normalised, per-pixel
+speckle + 1–4 water ellipses (geometry/distribution matched to
+`make_synthetic_scene.py`) → **best-epoch val IoU 0.9647 / val Dice 0.9817**.
+Inference on the demo scene `ml/data/sar_scenes/scene_patna.tif` (16.8 % water
+ground truth) returns predicted ratio 0.168 → **99.84 km², ABOVE_NORMAL,
+confidence 0.79**, attributed to BR-Patna (Bihar) — the numbers a fresh run of
+`POST /api/ai/sar/ingest` reproduces. Honest label everywhere: *synthetic =
+pipeline certification only, NOT a production model*.
+
 ### 5.2 Inference → extents → scorer
 
 ```
@@ -265,7 +275,8 @@ scene GeoTIFF (Sentinel-1, VV/VH)
         ▼
   rasterio.features.shapes ⇒ polygons, unary union, simplify
         ▼
-  area_km2 = flooded_px · pixel_area (10 m unless georeferenced)
+  area_km2 = flooded_px · pixel_area (metres from geotransform; EPSG:4326
+             degrees converted at scene latitude via 111320 m/deg · cos(lat))
   water_depth_avg = 0.4 + ratio·2.5 (conservative estimate, SAR-only Phase 1)
   flood_status from depth bands (NORMAL…EXTREME)
         ▼
@@ -279,8 +290,10 @@ scene GeoTIFF (Sentinel-1, VV/VH)
 
 Express endpoint: `POST /api/ai/sar/ingest` (upload scene → extents persisted →
 orchestrator picks them up in real-time mode; source registry updates to LIVE).
-Until a model is trained the endpoint returns 501 with the training pointer —
-fail-soft by design.
+With the local synthetic model present the endpoint is live; the wrapper
+reloads artifacts on mtime change, so a Colab retrain dropped into
+`ml/artifacts/sar_unet` is served without a backend restart. Fail-soft: without
+artifacts the endpoint returns 501 with the training pointer.
 
 ---
 

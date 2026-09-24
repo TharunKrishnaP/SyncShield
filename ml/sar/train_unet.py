@@ -49,16 +49,24 @@ class SyntheticSAR(Dataset):
     def __getitem__(self, i):
         size = self.size
         rng = self.rng
+        # Vectorised numpy RNG derived from the python RNG so per-chip
+        # reproducibility is kept while per-pixel draws stay fast.
+        nprng = np.random.default_rng(rng.randrange(2**32))
         # Two SAR bands VV/VH in dB-ish scale.
         img = np.zeros((2, size, size), dtype=np.float32)
         mask = np.zeros((size, size), dtype=np.float32)
         base = -16.0 + rng.uniform(-2, 2)
         for b in range(2):
             noise = rng.uniform(0.8, 3.0)
-            img[b] = base + rng.gauss(0, noise) * np.ones((size, size))
+            # per-pixel speckle (matches real SAR texture AND the demo scene
+            # generator ml/sar/make_synthetic_scene.py)
+            img[b] = base + nprng.normal(0.0, noise, (size, size))
         for _ in range(rng.randint(1, 4)):
             cx, cy = rng.randint(0, size - 1), rng.randint(0, size - 1)
-            rx, ry = rng.randint(10, size // 4), rng.randint(6, size // 4)
+            # wide range incl. large elongated ellipses (the demo scene's
+            # blob is rx~0.6*size) so blob scale is in-distribution
+            rx = rng.randint(10, max(11, int(size * 0.6)))
+            ry = rng.randint(6, max(7, size // 5))
             rot = rng.uniform(0, 3.1415)
             y, x = np.mgrid[0:size, 0:size]
             dx = (x - cx) * np.cos(rot) + (y - cy) * np.sin(rot)
@@ -67,7 +75,13 @@ class SyntheticSAR(Dataset):
             mask[blob] = 1.0
             for b in range(2):
                 img[b][blob] += rng.uniform(-6, -2)  # water = darker backscatter
-        img = (img - (-22.0)) / 16.0  # normalise into [0,1]-ish
+        # Same per-band percentile normalisation as inference
+        # (ml/sar/infer.py load_scene_array) so the model sees the exact
+        # distribution it will be fed on real scenes.
+        for b in range(2):
+            band = img[b]
+            lo, hi = np.percentile(band, 1), np.percentile(band, 99)
+            img[b] = np.clip((band - lo) / max(hi - lo, 1e-6), 0, 1)
         return torch.tensor(img), torch.tensor(mask).unsqueeze(0)
 
 
@@ -177,7 +191,7 @@ def train(args):
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
 
-    best_iou, best_state = 0.0, None
+    best_iou, best_dice, best_state = 0.0, 0.0, None
     started = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -192,7 +206,8 @@ def train(args):
             steps += 1
         val_iou, val_dice = evaluate(model, val_loader, device)
         if val_iou > best_iou:
-            best_iou, best_state = val_iou, {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_iou, best_dice = val_iou, val_dice
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(f"epoch {epoch}/{args.epochs}  loss={run_loss / max(steps, 1):.4f}  val_iou={val_iou:.4f}  val_dice={val_dice:.4f}")
 
     out = Path(args.out)
@@ -207,7 +222,7 @@ def train(args):
         "train_samples": len(train_ds),
         "val_samples": len(val_ds),
         "val_iou": round(best_iou, 4),
-        "val_dice": round(val_dice, 4),
+        "val_dice": round(best_dice, 4),
         "elapsed_sec": round(time.time() - started, 1),
         "device": str(device),
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
