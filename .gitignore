@@ -1,0 +1,35 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# ---- Node / frontend ----
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---- Runtime data & state (regenerated on run; demo churns these every refresh) ----
+data/
+data_lake/
+backend/data_lake/
+*.db
+*.sqlite3
+citizen_media/
+
+# ---- Secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# ---- ML runtime (ml/data, ml/artifacts handled by ml/.gitignore too) ----
+ml/data/
+ml/artifacts/

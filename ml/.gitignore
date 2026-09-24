@@ -1,0 +1,10 @@
+# ML workspace
+ml/data/
+ml/artifacts/
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.tif
+*.tar.gz
+__pycache__/

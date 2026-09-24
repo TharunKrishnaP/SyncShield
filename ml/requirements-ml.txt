@@ -1,0 +1,16 @@
+# ML workspace deps (separate from backend runtime deps).
+# Backend already has scikit-learn/joblib for the text classifier.
+# The SAR training/inference stack is Colab-oriented (torch is heavy).
+scikit-learn>=1.5
+joblib>=1.3
+numpy>=1.26
+pandas>=2.1
+
+# --- Colab / GPU training (D upgrade + C) ---
+torch>=2.2
+transformers>=4.40
+datasets>=2.19
+segmentation-models-pytorch>=0.3.4
+rasterio>=1.3
+shapely>=2.0
+huggingface-hub>=0.23
