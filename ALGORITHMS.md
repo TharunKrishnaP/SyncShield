@@ -236,7 +236,7 @@ Goal: segment flood water in SAR backscatter and fuse real extents into the
 
 ```
 ┌───────────────────────────┐
-│ Sen1Floods11 (cc-by-4.0)  │  download_sen1floods11.py (HF mirror, ~35 GB tar)
+│ Sen1Floods11 (cc-by-4.0)  │  download_sen1floods11.py (public GCS bucket)
 │ S1Hand (VV/VH) + Label    │
 └────────────┬──────────────┘
              ▼
