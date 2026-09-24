@@ -92,9 +92,12 @@ Current certified run (CPU, 2026-09-24): **val IoU 0.9647 / val Dice 0.9817**
    model output, not just the scenario.
 5. **Honesty slide:** this run is a *synthetic-scene pipeline certification*
    (2-band VV/VH stand-ins trained on CPU). The real model trains for free on
-   Colab T4 via `ml/sar/train_colab.ipynb` from Sen1Floods11; the same code
-   paths (`infer.py`, `sar_model.py`) then serve it unchanged — the backend
-   hot-reloads new artifacts by file mtime, no restart.
+   Colab T4 via `ml/sar/train_colab.ipynb` from Sen1Floods11 — scoped to the
+   dataset's single India event (2016 Assam, 535 chips; `download_sen1floods11.py
+   --events India --layers S1Hand LabelHand`) with a deterministic 85/15 split
+   for an honest held-out IoU. The same code paths (`infer.py`, `sar_model.py`)
+   serve it unchanged — the backend hot-reloads new artifacts by file mtime,
+   no restart.
 
 ## 5. The AI/ML story (3 min) — Rubric links
 

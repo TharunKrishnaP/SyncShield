@@ -252,7 +252,10 @@ Goal: segment flood water in SAR backscatter and fuse real extents into the
 
 `train_unet.py --mode synthetic` certifies the whole chain on any machine
 (no GPU); `--mode sen1floods11` is the real training path (Colab notebook
-`ml/sar/train_colab.ipynb`).
+`ml/sar/train_colab.ipynb`). The real run uses the dataset's single India
+event (2016 Assam, 535 chips) with a deterministic 85/15 chip-id train/val
+split for an honest held-out IoU; `download_sen1floods11.py --events India
+--layers S1Hand LabelHand` extracts only the ~1.5 GB needed (tar deleted).
 
 Latest local certification (CPU, 2026-09-24, ~17 min, `ml/artifacts/sar_unet/meta.json`):
 260 synthetic chips × 12 epochs, 2 bands percentile-normalised, per-pixel

@@ -17,6 +17,7 @@ architecture config (so a later wrapper can rebuild the model) plus measured
 validation IoU/Dice — the "how it was trained / how it was tested" record.
 """
 import argparse
+import hashlib
 import json
 import random
 import time
@@ -85,19 +86,28 @@ class SyntheticSAR(Dataset):
         return torch.tensor(img), torch.tensor(mask).unsqueeze(0)
 
 
+def _fold(name: str, val_frac: float = 0.15) -> int:
+    """Deterministic 0..99 bucket of a chip filename (stable across runs/VMs)."""
+    return int(hashlib.md5(name.encode("utf-8")).hexdigest()[:8], 16) % 100
+
+
 class Sen1Floods11(Dataset):
     """Real tiles from the extracted Sen1Floods11 directory.
 
     Uses S1Hand (VV/VH) + Label .tif pairs. Label: 2 = water -> mask 1.
+    ``partition`` splits chips deterministically by filename hash so the
+    validation set is genuinely held-out (never trained on).
     """
 
-    def __init__(self, data_dir, size=256, seed=0, augment=False):
+    SPLIT_VAL_FRAC = 0.15
+
+    def __init__(self, data_dir, size=256, seed=0, augment=False, partition="all"):
         import rasterio
 
         self.size, self.rng = size, random.Random(seed)
         self.augment = augment
-        self.pairs = []
         data_dir = Path(data_dir)
+        pairs = []
         for tif in sorted(data_dir.glob("**/S1Hand_*.tif")):
             cands = [
                 tif.with_name(tif.name.replace("S1Hand", "Label")),
@@ -106,9 +116,16 @@ class Sen1Floods11(Dataset):
             ]
             lab = next((p for p in cands if p.exists()), None)
             if lab is not None:
-                self.pairs.append((str(tif), str(lab)))
+                pairs.append((str(tif), str(lab)))
+        if partition == "train":
+            thresh = self.SPLIT_VAL_FRAC * 100
+            pairs = [p for p in pairs if _fold(Path(p[0]).name) >= thresh]
+        elif partition == "val":
+            thresh = self.SPLIT_VAL_FRAC * 100
+            pairs = [p for p in pairs if _fold(Path(p[0]).name) < thresh]
+        self.pairs = pairs
         self.rasterio = rasterio
-        assert self.pairs, f"no S1Hand/Label pairs found under {data_dir}"
+        assert self.pairs, f"no S1Hand/Label pairs for partition='{partition}' under {data_dir}"
 
     def __len__(self):
         return len(self.pairs)
@@ -177,12 +194,12 @@ def train(args):
         val_ds = SyntheticSAR(n=args.val_samples, size=args.size, seed=2)
         pretrained = False
     else:
-        train_ds = Sen1Floods11(args.data_dir, size=args.size, seed=1, augment=True)
-        val_ds = Sen1Floods11(args.data_dir, size=args.size, seed=2, augment=False)
-        n_val = max(int(len(val_ds) * 0.15), 4)
-        val_ds.pairs = val_ds.pairs[:n_val]
+        train_ds = Sen1Floods11(args.data_dir, size=args.size, seed=1, augment=True, partition="train")
+        val_ds = Sen1Floods11(args.data_dir, size=args.size, seed=2, augment=False, partition="val")
         pretrained = True
-        print(f"sen1floods11 tiles: train={len(train_ds)} val={len(val_ds)}")
+        print(f"sen1floods11 tiles: train={len(train_ds)} val={len(val_ds)} "
+              f"(deterministic {100 - int(Sen1Floods11.SPLIT_VAL_FRAC * 100)}/"
+              f"{int(Sen1Floods11.SPLIT_VAL_FRAC * 100)} split by chip-id hash)")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)

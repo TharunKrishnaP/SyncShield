@@ -46,12 +46,17 @@ relief-operations message → RELIEF_SHELTER_FULL).
 ## C — Sentinel-1 SAR flood U-Net (pipeline live; full-IoU training on Colab)
 
 - **Data**: Sen1Floods11 (cc-by-4.0) via HF mirror `harshinde/sen1floods`
-  (~35 GB tar; S1Hand VV/VH + water labels).
+  (~35 GB tar; S1Hand VV/VH + water labels). Real-run scope: the dataset's
+  **single India event** (2016 Assam, 535 chips) — `download_sen1floods11.py
+  --events India --layers S1Hand LabelHand` extracts only the needed
+  `S1Hand`+`LabelHand` pairs (~1.5 GB on disk) and deletes the tar (~35 GB freed).
 - **Model**: U-Net, encoder resnet18 (imagenet-pretrained), in=2, out=1,
   BCE-with-logits + Adam, LR 1e-3.
 - **Training**: `ml/sar/train_colab.ipynb` on a free T4
   (`train_unet.py --mode sen1floods11`) → val IoU/Dice reported in
-  `ml/artifacts/sar_unet/meta.json`.
+  `ml/artifacts/sar_unet/meta.json`. Train/val are split **deterministically by
+  chip-id hash (85/15, `Sen1Floods11(partition=...)`)**, so the reported val
+  IoU is on held-out chips — no leak.
 - **Local certification — LIVE (2026-09-24, CPU, ~17 min)**:
   `train_unet.py --mode synthetic` — 260 chips × 12 epochs, 2-band VV/VH
   percentile-normalised, per-pixel speckle + 1–4 water ellipses (distribution
