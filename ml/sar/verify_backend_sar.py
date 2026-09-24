@@ -54,4 +54,43 @@ if avail and SCENE.exists():
         print("\nextent record:", json.dumps({k: e[k] for k in ("zone_id", "flood_area_km2", "water_depth_avg", "flood_status", "state", "district", "confidence", "resolution_m")}, indent=1))
 
 print(f"\n{'ALL CHECKS PASSED' if not fails else 'FAILED: ' + ', '.join(fails)}")
+
+# 5-6: live API — require backend on :8000 (shared singleton, same datalake)
+import urllib.request  # noqa: E402
+
+BASE = "http://localhost:8000"
+
+
+def _get(path):
+    with urllib.request.urlopen(BASE + path, timeout=60) as r:
+        return json.load(r)
+
+
+print("\n--- live API checks (backend on :8000) ---")
+api_ok = True
+try:
+    ext = _get("/api/ai/sar/extents")
+    ml = [e for e in ext.get("extents", []) if (e.get("data_source") or "").startswith("ML_SAR")]
+    check("5a /api/ai/sar/extents has ML_SAR extents", len(ml) >= 1, f"n={len(ml)} zones={ext.get('zones')}")
+    models = _get("/api/ai/models").get("sar_unet", {})
+    check("5b /api/ai/models sar_unet.available", models.get("available") is True)
+    cur = _get("/api/situation/current")
+    zones = {}
+    try:
+        zones = _get("/api/situation/zones").get("zones", {})
+    except Exception:
+        zones = {}
+    zid = (ml[0].get("zone_id") if ml else None)
+    if zid and isinstance(zones, dict):
+        z = zones.get(zid, {})
+        sat = z.get("satellite_score")
+        check("6 situation zone satellite_score > 0 (ML-driven)",
+              isinstance(sat, (int, float)) and sat > 0, f"{zid} satellite_score={sat}")
+    else:
+        check("6 situation zone satellite_score > 0 (ML-driven)", False, "zone lookup failed")
+except Exception as exc:
+    api_ok = False
+    check("5/6 live API reachable (" + str(exc) + ")", False)
+
+print(f"\n{'ALL CHECKS PASSED' if not fails else 'FAILED: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

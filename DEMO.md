@@ -65,12 +65,15 @@ risk score, recommendation). `/api/brief` — AI-written national brief.
 
 ## 4. SAR U-Net — live flood-extent prediction (3 min)
 
-Model C — trained on **real** Sen1Floods11 India data (467 weak-label train /
-68 human-QC val, the dataset's own geographic split — no synthetic data).
+Model C — trained on **real** Sen1Floods11 India data (real Sentinel-1 chips,
+the dataset's own split 467 weak-label train / 68 human-QC val when the full
+download is present; this repo's bandwidth-scoped certification run used the
+deterministic 85/15 chip-id hash fallback — 384 real train chips — and
+measured **val IoU 0.4489 / val Dice 0.5793** on 65 held-out real chips —
+no synthetic data).
 
 Current artifacts (`ml/artifacts/sar_unet/meta.json`): real-data run on this
-repo, **val IoU / val Dice** as measured on the 68 held-out hand-labeled chips
-(see number in the models panel below).
+repo, val IoU/Dice as reported above (see the models panel below).
 
 1. **Models panel:** `GET /api/ai/models` → `sar_unet.available: true` with
    `val_iou`/`val_dice` from the real run, `mode: sen1floods11` and the

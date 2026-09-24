@@ -80,9 +80,15 @@ relief-operations message → RELIEF_SHELTER_FULL).
   trainer now fails **soft** (diverged.log sidecar, existing good artifacts
   preserved) instead of overwriting them with a NaN model.
 - **Local certification — LIVE (this repo, CPU, real data)**:
-  `train_unet.py --data-dir ml/data/sen1floods11 --size 128`
-  — trains on the **real** India chips from the public GCS bucket; measured
-  **val IoU / val Dice** reported in `ml/artifacts/sar_unet/meta.json`. The
+  `train_unet.py --data-dir ml/data/sen1floods11 --size 128 --epochs 35
+  --batch-size 8 --lr 3e-4 --grad-clip 1.0 --pos-weight 8.0` — trained on the
+  **real** India chips from the public GCS bucket. Because the HandLabeled
+  pool was skipped (this run was bandwidth-scoped — see note below), the
+  loader used its deterministic 85/15 chip-id hash fallback over the real
+  chips on disk: **384 train / 65 val**, all real Sen1Floods11 Sentinel-1
+  chips. Measured **val IoU 0.4489 / val Dice 0.5793** (best epoch state saved;
+  all weights finite, no `diverged.log`) — reported in
+  `ml/artifacts/sar_unet/meta.json`. The
   demo scene is itself a real Sentinel-1 tile (`scene_india_assam.tif`,
   ~10 m/px, Assam, from the HandLabeled pool — reproducible with
   `ml/sar/mk_real_scene.py`, so no synthetic scene generator exists) —

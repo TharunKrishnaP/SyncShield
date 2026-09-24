@@ -7,7 +7,7 @@ with the third (river forecasting) scaffolded for Phase 2.
 | Model | Status (Phase 1) | Artifacts | Metrics (see `artifacts/*/metrics.json`) |
 |---|---|---|---|
 | **D — incident text classifier** | ✅ Trained + live in backend | `artifacts/text_classifier/` | Gold (unseen hand-written set, n=59): accuracy **0.78**, macro-F1 **0.79** — see `EVIDENCE_SHEET.md` |
-| **C — Sentinel-1 SAR flood U-Net** | ✅ Trained on **real** Sen1Floods11 India data (467 weak / 68 hand, GCS) | `artifacts/sar_unet/` | IoU on Sen1Floods11 held-out (reported in `meta.json`) |
+| **C — Sentinel-1 SAR flood U-Net** | ✅ Trained on **real** Sen1Floods11 India data (384 chips trained / 65 held-out, live in backend) | `artifacts/sar_unet/` | val IoU **0.4489** / val Dice **0.5793** (held-out real chips, `meta.json`) |
 | **A — river-level forecaster** | ⏳ Phase 2 (scaffold in `forecast/`) | — | NSE/MAE vs GloFAS baseline |
 | **Learned fusion / calibration** | ⏳ Phase 2 (`fusion/` scaffold) | — | calibration vs. history lake |
 

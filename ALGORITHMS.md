@@ -260,12 +260,13 @@ for an honest held-out IoU. **No synthetic data is used anywhere in the
 pipeline** — every claim is backed by real Sentinel-1 chips.
 
 Real-data certification (this repo, `ml/artifacts/sar_unet/meta.json`):
-real India chips × N epochs, 2 bands percentile-normalised, resnet18 U-Net
+384 real India chips × 35 epochs, 2 bands percentile-normalised, resnet18 U-Net
 (BCE pos-weight 8, Adam LR 3e-4, grad-clip 1.0 — the first real attempt at
-plain BCE/LR 1e-3 diverged to NaN and was rejected fail-soft) → **val IoU/Dice
-on held-out chips** (canonical WeakLabeled-train/HandLabeled-val split when
-the full download is present; otherwise a deterministic 85/15 chip-id hash
-split over the real chips on disk — the meta.json `note` records which).
+plain BCE/LR 1e-3 diverged to NaN and was rejected fail-soft) → **val IoU
+0.4489 / val Dice 0.5793 on 65 held-out chips** (canonical
+WeakLabeled-train/HandLabeled-val split when the full download is present;
+otherwise a deterministic 85/15 chip-id hash split over the real chips on
+disk — the meta.json `note` records which).
 Inference on the real demo scene
 `ml/data/sar_scenes/scene_india_assam.tif` (a real Sentinel-1 tile, ~10 m/px)
 returns the flood extent attributed to an Assam zone (AS-Biswanath) — the
