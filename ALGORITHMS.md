@@ -172,28 +172,39 @@ Goal: classify citizen/report text into 11 incident categories
 BRIDGE_COLLAPSE, LANDSLIDE, EVACUATION_NEEDED, RELIEF_SHELTER_FULL,
 WATER_CONTAMINATION, COMMUNICATION_DOWN, OTHER`).
 
-### 4.1 Training (weak supervision, runs locally in seconds)
+### 4.1 Training (real human-annotated crisis text, runs locally in minutes)
 
 ```
-┌───────────────────────────┐
-│ Weak-supervision corpus    │  ml/text/build_corpus.py
-│  template rows (EN+Hinglish)│  + hand-written realistic reports
-│  curated rows (train)      │  + held-out gold set (test, unseen)
-│  gold rows (test)          │
-└────────────┬──────────────┘
+┌───────────────────────────────────────────┐
+│ Real annotated crisis text corpus          │  ml/text/build_real_corpus.py
+│  HumAID set1 (43,409 tweets, 13 disasters) │
+│  + CrisisNLP (CrowdFlower + volunteers)    │
+│  + 6 live datalake reports (test-only)     │
+│  56,978 rows · 48,997 train / 7,981 test   │
+│  labels: humanitarian → 11 FDR categories  │
+│  (keyword-refined mapping, _TOKEN_RULES)   │
+└────────────┬──────────────────────────────┘
              ▼
-   TF-IDF (1-2 grams, sublinear)
+   TF-IDF (1-2 grams, sublinear, balanced)
              ▼
    LinearSVC → sigmoid calibration
    (Platt scaling, CV) ⇒ predict_proba
              ▼
    Artifacts: model.joblib, vectorizer.joblib,
-   labels.json, metrics.json (gold: acc 0.78)
+   labels.json, metrics.json (cross-event acc 0.9566)
 ```
 
-Measured (unseen gold set, n=59): **accuracy 0.7797 · macro-F1 0.7862**,
-template holdout ≈0.997 (weak supervision is easy on its own templates — the
-gold set is the honest number).
+**Split is event-disjoint**: whole real disasters are held out of training —
+`srilanka_floods_2017`, `maryland_floods_2018`, Cyclone Pam, Typhoon Hagupit,
+Hurricane Odile + the live datalake rows. Test rows are real tweets from
+disasters the model never saw.
+
+Measured on the held-out cross-event test set (n=7,981): **accuracy 0.9566 ·
+weighted F1 0.9549 · macro F1 0.6042**. Weak classes under 43K-tweet weak
+supervision (FLOODED_ROAD 0.00, BRIDGE_COLLAPSE 0.00, COMMUNICATION_DOWN 0.24
+cross-event F1) are honestly reported and rescued in production by the hybrid
+rule layer (evidence gates + rule override). Full per-class table + confusions:
+`ml/artifacts/text_classifier/metrics.json`.
 
 ### 4.2 Inference — hybrid consensus with the rule engine
 
@@ -220,10 +231,15 @@ evidence_gate(label, p):                   # only below p=0.85
 ```
 
 Wired into the single text funnel (`nlp_extractor.extract_incident`) so every
-citizen report, simulated report and news item flows through it; regex still
-handles location, severity and acts as the fallback. Live proof:
+citizen report, live datalake report and news item flows through it; regex still
+handles location, severity and acts as the fallback; the `/api/ai/classify`
+endpoint runs the same funnel and returns `rule_category` alongside the model
+pick so disagreements stay visible. Live proof (v2 real-corpus model):
 `POST /api/ai/classify {"text": "Ambulance stuck … road to hospital is flooded"}`
-→ `HOSPITAL_ACCESS_BLOCKED`, confidence 0.986, top-3 + method returned.
+→ `TRAPPED_RESIDENTS`, confidence 0.793 with `rule_category:
+HOSPITAL_ACCESS_BLOCKED` — model pick ≥ 0.75 so it decides, rules reported in
+parallel (the old v1-template model returned HOSPITAL_ACCESS_BLOCKED 0.986;
+real-corpus v2 is reported honestly above).
 
 ---
 
@@ -260,13 +276,12 @@ for an honest held-out IoU. **No synthetic data is used anywhere in the
 pipeline** — every claim is backed by real Sentinel-1 chips.
 
 Real-data certification (this repo, `ml/artifacts/sar_unet/meta.json`):
-384 real India chips × 35 epochs, 2 bands percentile-normalised, resnet18 U-Net
-(BCE pos-weight 8, Adam LR 3e-4, grad-clip 1.0 — the first real attempt at
-plain BCE/LR 1e-3 diverged to NaN and was rejected fail-soft) → **val IoU
-0.4489 / val Dice 0.5793 on 65 held-out chips** (canonical
-WeakLabeled-train/HandLabeled-val split when the full download is present;
-otherwise a deterministic 85/15 chip-id hash split over the real chips on
-disk — the meta.json `note` records which).
+real India chips × 35 epochs (467 WeakLabeled train / 68 HandLabeled val — the
+dataset's own geographic split, human-QC labels never seen in training),
+2 bands percentile-normalised, resnet18 U-Net (BCE pos-weight 8, Adam LR 3e-4,
+grad-clip 1.0 — the first real attempt at plain BCE/LR 1e-3 diverged to NaN and
+was rejected fail-soft) → val IoU **0.2758** / Dice **0.3861** (on human-QC
+HandLabeled chips the model never saw).
 Inference on the real demo scene
 `ml/data/sar_scenes/scene_india_assam.tif` (a real Sentinel-1 tile, ~10 m/px)
 returns the flood extent attributed to an Assam zone (AS-Biswanath) — the
@@ -295,6 +310,14 @@ scene GeoTIFF (Sentinel-1, VV/VH)
         ▼
   datalake.put_satellite_extent → next refresh feeds scorer (0.35 weight)
 ```
+
+Honesty note on extent precision: extents are **coarse, ML-estimated**, not
+surveyed ground truth. The model runs on ~38 m/px Sentinel-1 chips (the
+`resolution_m` field; `flood_pixel_ratio` records the fraction of the whole
+128×128 chip classified as water — e.g. 0.9991 means the entire chip is wet).
+`flood_area_km2`/`water_depth_avg` are therefore indicative estimates from the
+U-Net mask + the conservative `0.4 + ratio·2.5` depth heuristic, and the map
+popup says so explicitly.
 
 Express endpoint: `POST /api/ai/sar/ingest` (upload scene → extents persisted →
 orchestrator picks them up in real-time mode; source registry updates to LIVE).

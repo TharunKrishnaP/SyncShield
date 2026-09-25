@@ -44,19 +44,25 @@ carries `nlp_extracted.ml_classification` (model, method, confidence, top-3).
 Then the live-model demos (backend):
 
 ```
-GET  /api/ai/models     → D: available, corpus, gold acc 0.78 / macro-F1 0.79,
-                          per-class F1, confusion list; C: artifacts + note
-POST /api/ai/classify   → {"text": "..."} → {category, confidence, method, top3}
+GET  /api/ai/models     → D: available, real-corpus provenance (version/split,
+                          event counts), held-out cross-event acc 0.9566 /
+                          weighted F1 0.9549, per-class F1, confusion list;
+                          C: artifacts + note
+POST /api/ai/classify   → {"text": "..."} → {category, confidence, method, top3,
+                          rule_category}
 GET  /docs              → all endpoints, try them interactively
 ```
 
-Three lines worth typing into `/api/ai/classify`:
+Three lines worth typing into `/api/ai/classify` (v2 real-corpus model —
+the Hinglish and hospital lines show the honest OOD/weak-class trade-off
+documented above; `rule_category` shows what the rule engine independently
+fired):
 
-| Text | Expected |
+| Text | Result (v2, measured) |
 |---|---|
-| `Ambulance stuck in water near Gandhi Ghat, Patna, road to hospital flooded` | HOSPITAL_ACCESS_BLOCKED @ ~0.99 |
-| `gali me paani bhar gaya hai, gaadiyaan atki hui hain` | FLOODED_ROAD (Hinglish) |
-| `Looking for a tiffin service near the office` | OTHER (non-incident) |
+| `Ambulance stuck in water near Gandhi Ghat, Patna, road to hospital flooded` | TRAPPED_RESIDENTS @ 0.7928 (`rule_category: HOSPITAL_ACCESS_BLOCKED`) |
+| `gali me paani bhar gaya hai, gaadiyaan atki hui hain` | OTHER @ 0.9725 (FLOODED_ROAD is a 0.00 cross-event class; rules have no Hinglish pattern) |
+| `Looking for a tiffin service near the office` | OTHER @ 0.9305 (non-incident, correct) |
 
 ## 3. Routing & brief (1 min)
 
@@ -66,14 +72,12 @@ risk score, recommendation). `/api/brief` — AI-written national brief.
 ## 4. SAR U-Net — live flood-extent prediction (3 min)
 
 Model C — trained on **real** Sen1Floods11 India data (real Sentinel-1 chips,
-the dataset's own split 467 weak-label train / 68 human-QC val when the full
-download is present; this repo's bandwidth-scoped certification run used the
-deterministic 85/15 chip-id hash fallback — 384 real train chips — and
-measured **val IoU 0.4489 / val Dice 0.5793** on 65 held-out real chips —
-no synthetic data).
+the dataset's own geographic split — 467 WeakLabeled train / 68 HandLabeled
+val, human-QC labels the model never saw). Measured val IoU **0.2758** / Dice
+**0.3861** (on human-QC chips the model never saw) — no synthetic data.
 
 Current artifacts (`ml/artifacts/sar_unet/meta.json`): real-data run on this
-repo, val IoU/Dice as reported above (see the models panel below).
+repo, **val IoU 0.2758 / Dice 0.3861** (canonical split).
 
 1. **Models panel:** `GET /api/ai/models` → `sar_unet.available: true` with
    `val_iou`/`val_dice` from the real run, `mode: sen1floods11` and the
@@ -85,24 +89,27 @@ repo, val IoU/Dice as reported above (see the models panel below).
    ```
    → returns the extent record: zone **AS-Biswanath (Assam)**, `flood_area_km2`
    as predicted, `flood_status`, `confidence`, `flood_polygons`,
-   `data_source: ML_SAR_UNET`.
+   `data_source: ML_SAR_UNET` (extents are coarse ~38 m/px ML estimates, not
+   surveyed ground truth — the map popup and `ALGORITHMS.md` say so).
 3. **Inspected state:** `GET /api/ai/sar/extents` — count + zones + total area.
 4. **On the dashboard:** the map renders the **ML prediction** for the Assam
    zone (polygon popup: *“ML U-Net Flood Extent (Sentinel-1) · Source: trained
-   U-Net · confidence …”*). The orchestrator replaces the modelled/sim
-   extent for covered zones with the `ML_SAR` output (sim skips those zones,
+   U-Net · confidence … · Coarse estimate: extent derived at ~38 m pixel
+   resolution from the full scene chip (flood pixel fraction …), not surveyed
+   ground truth — treat as indicative, not measured”*). The orchestrator
+   replaces the modelled/sim extent for covered zones with the `ML_SAR` output
+   (sim skips those zones,
    ML extents are appended last so the frontend's per-zone dedupe keeps the
    model's result) — the zone's satellite evidence + severity reflect live
    model output, not just the scenario.
 5. **Honesty slide:** the model is trained end-to-end on **real** Sentinel-1
    chips (Sen1Floods11 India event, 2016 Assam; public GCS bucket). Training
-   uses the dataset's own split when the full download is present — 467
-   weakly-labeled chips train + 68 hand-labeled chips (human QC) validate, so
-   the reported val IoU is on labels the model never saw. On a data-cap
-   constrained machine the loader falls back to a deterministic 85/15 chip-id
-   hash split over the real chips on disk (the meta.json `note` records which
-   split was used) — still held-out, still real data. No synthetic data is
-   used anywhere. The
+   uses the dataset's own geographic split — 467 WeakLabeled chips train + 68
+   HandLabeled chips (human QC) validate → val IoU **0.2758** / Dice **0.3861**
+   on labels the model never saw. The lower numbers vs. the old hash-split run
+   (IoU 0.4489) are honest: the canonical split validates on *completely
+   disjoint* human-QC chips, which is the scientifically correct benchmark. No
+   synthetic data is used anywhere. The
    demo scene is itself a real Sentinel-1 tile (`scene_india_assam.tif`,
    ~10 m/px, copied from the HandLabeled pool via `ml/sar/mk_real_scene.py`).
    Same code paths (`infer.py`, `sar_model.py`) serve it unchanged
@@ -126,7 +133,9 @@ repo, val IoU/Dice as reported above (see the models panel below).
 1. Every AI score is explainable — weights and raw signals shown per zone.
 2. ML is fail-soft: no artifacts → rule engine takes over (wrapper reports
    `available:false`), endpoints answer 501 with training pointers, never 500.
-3. Sources are labeled truthfully: LIVE (Open-Meteo, GloFAS, GDACS, EONET),
-   SIMULATED (scenario-mode flood polygons, flagged), NEEDS_KEY (Bhoonidhi, CWC).
-4. Trained D numbers are from a *held-out hand-written* gold set (n=59):
-   acc 0.78, macro-F1 0.79 — not template-appended scores.
+3. Sources are labeled truthfully: LIVE (Open-Meteo, GloFAS, GDACS, EONET,
+   CWC published thresholds), SIMULATED (scenario-mode only — never persisted
+   to the datalake in real mode), NEEDS_KEY (Bhoonidhi, CWC NWDP telemetry).
+4. Trained D numbers are from a *held-out cross-event* test set of real tweets
+   (n=7,981 from disasters never seen in training): acc 0.9566, weighted F1
+   0.9549, macro-F1 0.60 — not template-appended scores.

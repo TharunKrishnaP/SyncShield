@@ -19,6 +19,12 @@ backend/data_lake/
 *.sqlite3
 citizen_media/
 
+# ---- Runtime service logs (demo churn every refresh) ----
+backend_demo*.log
+frontend_demo*.log
+ml/sar/retrain_full.log
+ml/text/retrain_text_v2b.log
+
 # ---- Secrets ----
 .env
 .env.*

@@ -46,6 +46,12 @@ export default function SatelliteOverlay() {
                   ? `Source: trained U-Net · confidence ${e.confidence}`
                   : `Source: ${e.satellite} · ${e.sensor}`}
               </div>
+              <div className="text-slate-400 italic mt-1">
+                Coarse estimate: extent derived at {e.resolution_m || '~38'} m
+                pixel resolution from the full {e.source_scene || 'scene'} chip
+                (flood pixel fraction {e.flood_pixel_ratio?.toFixed?.(3) ?? e.flood_pixel_ratio}),
+                not surveyed ground truth — treat as indicative, not measured.
+              </div>
             </div>
           </Popup>
         </Polygon>

@@ -50,10 +50,19 @@ async def ai_models() -> Dict[str, Any]:
 async def ai_classify(req: ClassifyRequest) -> Dict[str, Any]:
     if not req.text.strip():
         raise HTTPException(400, "text is required")
-    result = ml_text_classifier.classify(req.text, threshold=req.threshold)
+    # Same hybrid funnel as production (nlp_extractor.extract_incident): the
+    # rule engine provides regex_category, the trained model refines it with
+    # evidence gates + rule rescue. This keeps the demo endpoint behaviour
+    # identical to what the citizen-report path runs.
+    from ..ai_engine.nlp_extractor import _extract_category
+
+    regex_category = _extract_category(req.text)
+    result = ml_text_classifier.classify(req.text, regex_category=regex_category,
+                                         threshold=req.threshold)
     if not result:
         raise HTTPException(503, "Text classifier model not available — train it with ml/text/train_svc.py")
     result["text"] = req.text.strip()[:200]
+    result["rule_category"] = regex_category
     return result
 
 

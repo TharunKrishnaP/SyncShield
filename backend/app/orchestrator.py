@@ -503,7 +503,7 @@ class FDROrchestrator:
                 "priorities": priorities,
                 "routes": routes,
                 "recommendations": recommendations,
-                "timeline": self.simulation.events(15),
+                "timeline": self.datalake.timeline(15),
                 "incidents": incidents_all[-30:],
                 "alerts": alerts[:25],
                 "brief": brief,

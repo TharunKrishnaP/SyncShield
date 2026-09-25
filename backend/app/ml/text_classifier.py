@@ -62,7 +62,7 @@ _CATEGORIES = [
     "WATER_CONTAMINATION", "COMMUNICATION_DOWN", "OTHER",
 ]
 
-MODEL_NAME = "ml-text-tfidf-svc-v1"
+MODEL_NAME = "ml-text-tfidf-svc-v2"
 
 
 class MLTextClassifier:
@@ -72,6 +72,7 @@ class MLTextClassifier:
         self._vectorizer = None
         self._labels: List[str] = []
         self._metrics: Optional[Dict[str, Any]] = None
+        self._model_name: str = MODEL_NAME
         self._load_attempted = False
 
     # ------------------------------------------------------------------
@@ -95,6 +96,9 @@ class MLTextClassifier:
                 self._labels = json.loads(labels_path.read_text(encoding="utf-8")) if labels_path.exists() else list(_CATEGORIES)
                 metrics_path = _MODEL_DIR / "metrics.json"
                 self._metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else None
+                name_path = _MODEL_DIR / "model_name.txt"
+                if name_path.exists():
+                    self._model_name = name_path.read_text(encoding="utf-8").strip()
                 return True
             except Exception:
                 self._model, self._vectorizer = None, None
@@ -108,7 +112,7 @@ class MLTextClassifier:
     def info(self) -> Dict[str, Any]:
         return {
             "available": self.available,
-            "model": MODEL_NAME,
+            "model": self._model_name,
             "artifacts_dir": str(_MODEL_DIR),
             "metrics": (self._metrics or {}) if self.available else None,
         }
@@ -192,7 +196,7 @@ class MLTextClassifier:
             "confidence": round(confidence, 4),
             "method": method,
             "top3": probas[:3],
-            "model": MODEL_NAME,
+            "model": self._model_name,
         }
 
 

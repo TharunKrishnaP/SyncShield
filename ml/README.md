@@ -6,24 +6,34 @@ with the third (river forecasting) scaffolded for Phase 2.
 
 | Model | Status (Phase 1) | Artifacts | Metrics (see `artifacts/*/metrics.json`) |
 |---|---|---|---|
-| **D — incident text classifier** | ✅ Trained + live in backend | `artifacts/text_classifier/` | Gold (unseen hand-written set, n=59): accuracy **0.78**, macro-F1 **0.79** — see `EVIDENCE_SHEET.md` |
-| **C — Sentinel-1 SAR flood U-Net** | ✅ Trained on **real** Sen1Floods11 India data (384 chips trained / 65 held-out, live in backend) | `artifacts/sar_unet/` | val IoU **0.4489** / val Dice **0.5793** (held-out real chips, `meta.json`) |
+| **D — incident text classifier** | ✅ Trained + live in backend | `artifacts/text_classifier/` | Held-out cross-event test (real tweets, n=7,981): accuracy **0.9566**, weighted F1 **0.9549**, macro F1 **0.60** — see `EVIDENCE_SHEET.md` |
+| **C — Sentinel-1 SAR flood U-Net** | ✅ Trained on **real** Sen1Floods11 India data (467 WeakLabeled train / 68 HandLabeled val — dataset's own geographic split, live in backend) | `artifacts/sar_unet/` | val IoU **0.2758** / Dice **0.3861** (held-out human-QC chips, `meta.json`) |
 | **A — river-level forecaster** | ⏳ Phase 2 (scaffold in `forecast/`) | — | NSE/MAE vs GloFAS baseline |
 | **Learned fusion / calibration** | ⏳ Phase 2 (`fusion/` scaffold) | — | calibration vs. history lake |
 
 ## How each model was trained / tested (the "reviewer answers")
 
 ### 1. Incident text classifier (D)
-- **Data**: weakly-supervised bilingual (English + romanized Hindi) corpus built in
-  `text/build_corpus.py` from template phrasings for the 10 incident categories
-  plus an `OTHER` class + a hand-written *gold* test set of realistic reports
-  (never seen by training). Corpus stats: `artifacts/text_classifier/corpus_stats.json`.
+- **Data**: **real human-annotated crisis text only** — `build_real_corpus.py`
+  builds a 56,978-row corpus (48,997 train / 7,981 test) from **HumAID set1**
+  (43,409 human-annotated tweets, 13 disasters, official train/dev/test
+  splits) + **CrisisNLP** (CrowdFlower paid workers + volunteers, incl. the
+  2014 India/Pakistan floods) + 6 live datalake reports (test-only).
+  HumAID/CrisisNLP humanitarian labels are mapped to the 11 FDR action
+  categories via the keyword-refined mapping (`_refine_fdr` + `_TOKEN_RULES`);
+  non-incident classes dropped. **No template-generated text anywhere.**
+- **Split**: **event-disjoint** — entire real disasters held out of training
+  (`srilanka_floods_2017`, `maryland_floods_2018`, Cyclone Pam, Typhoon
+  Hagupit, Hurricane Odile + live datalake rows); test = real tweets from
+  unseen disasters only.
 - **Model**: TF-IDF (1-2 grams) → linear SVM, probability-calibrated
-  (`CalibratedClassifierCV`). Trained with `python text/train_svc.py`.
-- **Test**: stratified hold-out + the gold set; per-class precision/recall/F1 and
-  confusion matrix in `artifacts/text_classifier/metrics.json`.
+  (`CalibratedClassifierCV`, class-balanced). Trained with `python text/train_svc.py`.
+- **Test**: held-out cross-event set (n=7,981) → **acc 0.9566 · weighted F1
+  0.9549 · macro F1 0.6042**; per-class precision/recall/F1 + confusion matrix
+  in `artifacts/text_classifier/metrics.json`. Weak classes are honestly
+  reported and rescued in prod by the hybrid rule layer.
 - **Upgrade path** (Phase 2): Distil-BERT / Indic-BERT fine-tune on Colab
-  (`text/train_colab.ipynb`) + human-annotated corpora (CrisisMMD / humAID).
+  (`text/train_colab.ipynb`) + expansion corpora (CrisisMMD / more HumAID sets).
 - **Integration**: `backend/app/ml/text_classifier.py` → called by
   `backend/app/ai_engine/nlp_extractor.py::extract_incident`.
   Regex extractor stays as fallback + location/severity extraction.
@@ -57,7 +67,7 @@ from history-lake outcomes instead of hand-picking; re-calibrate severity bands.
 
 ## Reproduce
 ```
-python ml/text/build_corpus.py && python ml/text/train_svc.py   # D — reproducible in seconds
+python ml/text/build_real_corpus.py && python ml/text/train_svc.py   # D — real annotated corpus, reproducible in ~minutes
 python ml/sar/download_sen1floods11.py --out ml/data/sen1floods11 --events India  # real data
 python ml/sar/train_unet.py --data-dir ml/data/sen1floods11 --size 128  # real U-Net (CPU)
 ```

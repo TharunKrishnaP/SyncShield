@@ -1,11 +1,46 @@
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from ..config import settings
+
+# Tags that mark a record as simulated (never permitted in the real pipeline
+# unless SIMULATION_ENABLED is explicitly true - and even then the simulation
+# engine writes to its own isolated buffer, not the shared datalake).
+# The guard matches explicit marker fields only, so legitimate real-world text
+# (e.g. an NDMA "mock drill" advisory) is never blocked.
+_SIMULATED_TAG_KEYS = ("simulated", "is_simulated", "simulation", "synthetic",
+                       "mock_data", "is_synthetic", "scenario_step")
+_SIMULATED_VALUE_RE = re.compile(
+    r"(?i)(^|[^a-z0-9_])(simulat|synthetic|mock|fictional)_?[a-z0-9_]*($|[^a-z0-9_])"
+)
+
+
+def _is_simulated(value: Any) -> bool:
+    """Detect a record explicitly tagged as simulated/synthetic.
+
+    Matches marker *keys* (any value) and marker *value tokens* on known
+    provenance fields (source, data_source, origin, type). Free text is never
+    scanned, so real-world descriptions containing words like "simulation" or
+    "mock drill" are safe.
+    """
+    provenance_fields = {"source", "data_source", "origin", "type", "record_type"}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            kl = str(k).lower()
+            if kl in _SIMULATED_TAG_KEYS:
+                return True
+            if kl in provenance_fields and isinstance(v, str) and _SIMULATED_VALUE_RE.search(v):
+                return True
+            if _is_simulated(v):
+                return True
+    elif isinstance(value, list):
+        return any(_is_simulated(v) for v in value)
+    return False
 
 
 class DataLake:
@@ -69,7 +104,17 @@ class DataLake:
     def _partition(self, key: str) -> Dict[str, Any]:
         return self._store.setdefault(key, {})
 
+    def _reject_simulated(self, value: Any, partition: str = "?"):
+        """Hard guard: refuse simulated/synthetic records in the real datalake
+        unless SIMULATION_ENABLED is explicitly set. Fail-closed."""
+        if _is_simulated(value) and not settings.SIMULATION_ENABLED:
+            raise ValueError(
+                f"refused to persist simulated/synthetic record into datalake "
+                f"partition '{partition}' (SIMULATION_ENABLED=False)"
+            )
+
     def put(self, partition: str, item_key: str, value: Any):
+        self._reject_simulated(value, partition)
         with self._lock:
             self._partition(partition)[item_key] = value
             self._dirty = True
@@ -99,6 +144,7 @@ class DataLake:
 
     # ---- weather ----
     def put_weather(self, location_id: str, record: Dict[str, Any]):
+        self._reject_simulated(record, "weather")
         bucket = self._partition("weather").setdefault(location_id, {"records": [], "latest": None})
         bucket["records"].append(record)
         bucket["latest"] = record
@@ -113,6 +159,7 @@ class DataLake:
 
     # ---- river ----
     def put_river_reading(self, station_id: str, record: Dict[str, Any]):
+        self._reject_simulated(record, "river")
         bucket = self._partition("river").setdefault(station_id, {"records": [], "latest": None, "metadata": {}})
         bucket["records"].append(record)
         bucket["latest"] = record
@@ -120,6 +167,7 @@ class DataLake:
         self._dirty = True
 
     def put_river_metadata(self, station_id: str, metadata: Dict[str, Any]):
+        self._reject_simulated(metadata, "river")
         self._partition("river").setdefault(station_id, {"records": [], "latest": None, "metadata": {}})[
             "metadata"
         ] = metadata
@@ -133,6 +181,7 @@ class DataLake:
 
     # ---- incidents ----
     def add_incident(self, incident: Dict[str, Any]):
+        self._reject_simulated(incident, "incidents")
         with self._lock:
             self._store["incidents"].append(incident)
             self._dirty = True
@@ -158,6 +207,7 @@ class DataLake:
 
     # ---- timeline ----
     def log_event(self, event: Dict[str, Any]):
+        self._reject_simulated(event, "timeline")
         with self._lock:
             self._store["timeline"].append(event)
             self._dirty = True

@@ -48,12 +48,12 @@ export function AppProvider({ children }) {
         regional: current.regional ?? null,
         zones: (b.situation_zones || {}).zones || {},
         priorities: (b.zones_priority || {}).priorities || [],
-        conflicts: [],
-        explanations: {},
+        conflicts: (b.conflicts || {}).conflicts || [],
+        explanations: (b.explanations || {}).explanations || {},
         routes: (b.layers || {}).routes || [],
         recommendations: (b.recommendations || {}).recommendations || [],
         incidents: (b.incidents || {}).incidents || [],
-        timeline: [],
+        timeline: (b.timeline || {}).timeline || [],
         simulation: current.simulation ?? null,
         brief: current.brief ?? null,
         waterLevels: (b.water_levels || {}).stations || [],
@@ -132,7 +132,7 @@ export function AppProvider({ children }) {
     if (connection === 'connected') return
     const id = setInterval(async () => {
       try {
-        const [current, water, precip, wind, alerts, ds, newsData] = await Promise.all([
+        const [current, water, precip, wind, alerts, ds, newsData, conflictsData, zonesData, prioData] = await Promise.all([
           api.situationCurrent(),
           api.waterLevels(),
           api.precipitation(),
@@ -140,6 +140,9 @@ export function AppProvider({ children }) {
           api.alerts(),
           api.dataSources(),
           api.news(30),
+          api.conflicts(),
+          api.situationZones(),
+          api.priorities(),
         ])
         applyState({
           regional: current.regional,
@@ -153,6 +156,9 @@ export function AppProvider({ children }) {
           alerts: alerts.alerts,
           sources: { sources: ds.sources || [], summary: ds.summary || {} },
           news: newsData.news || [],
+          conflicts: (conflictsData.conflicts || []).length ? conflictsData.conflicts : undefined,
+          zones: (zonesData.zones && Object.keys(zonesData.zones).length) ? zonesData.zones : undefined,
+          priorities: (prioData.priorities || []).length ? prioData.priorities : undefined,
         })
       } catch (err) {
         /* keep last state */

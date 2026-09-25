@@ -68,7 +68,11 @@ async def situation_brief():
 
 @router.get("/situation/timeline")
 async def situation_timeline():
-    return {"timeline": orchestrator.simulation.events(30)}
+    # Real-time view: the append-only datalake event log (log_event) records
+    # actual ingest steps - bootstraps, refresh cycles, official bulletins,
+    # citizen reports and river telemetry. The demo scenario player's in-memory
+    # step log (simulation.events) is never shown here.
+    return {"timeline": orchestrator.datalake.timeline(30)}
 
 
 @router.get("/situation/zones")
@@ -321,10 +325,13 @@ async def initial_bundle():
         "flood_events": flood_events(),
         "incidents": get_incidents(50),
         "recommendations": get_recommendations(),
+        "conflicts": get_conflicts(),
+        "explanations": _authors_explanations_slice(),
         "contacts": emergency_contacts(),
         "evacuation": evacuation(),
         "data_sources": data_sources(),
         "news": _news_slice(),
+        "timeline": situation_timeline(),
     }
     keys = list(coros.keys())
     results = await asyncio.gather(*coros.values(), return_exceptions=True)
@@ -339,6 +346,12 @@ async def _news_slice():
     from ..news.feed import news_feed
     items = news_feed.items(100)
     return {"count": len(items), "news": items[:30]}
+
+
+async def _authors_explanations_slice():
+    """Per-zone explanation map — same shape as WS '/api/ws' state key."""
+    state = await _ensure_state()
+    return {"explanations": state.get("explanations", {})}
 # ---- Refresh ----
 
 @router.post("/refresh")
