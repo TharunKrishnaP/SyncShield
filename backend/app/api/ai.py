@@ -110,3 +110,125 @@ def settings_ml_scenes_dir():
     from ..config import settings
 
     return settings.ML_SAR_SCENES_DIR
+
+
+# =============================================================================
+# Phase 2 — River Forecasting + Learned Fusion (scaffolds)
+# =============================================================================
+
+class ForecastRequest(BaseModel):
+    station_id: str
+    horizons: Optional[List[int]] = [1, 3, 5, 7]
+
+
+@router.get("/ai/river/forecast/{station_id}")
+async def ai_river_forecast(station_id: str, horizons: Optional[str] = None) -> Dict[str, Any]:
+    """
+    River flow forecast for a gauge station.
+    Returns ensemble forecast (LSTM + XGBoost + hybrid) with uncertainty bands.
+    """
+    # Parse horizons
+    h_list = [1, 3, 5, 7]
+    if horizons:
+        try:
+            h_list = [int(h) for h in horizons.split(",")]
+        except Exception:
+            pass
+
+    # Load trained model artifact
+    artifact_dir = Path("ml/artifacts/river_forecast") / station_id
+    if not artifact_dir.exists():
+        raise HTTPException(501, f"River forecast model for {station_id} not trained yet")
+
+    meta_path = artifact_dir / "meta.json"
+    if not meta_path.exists():
+        raise HTTPException(501, f"River forecast metadata missing for {station_id}")
+
+    meta = json.loads(meta_path.read_text())
+
+    # Placeholder: return structure with forecast values
+    # Real implementation loads model, runs inference on latest GloFAS + obs
+    return {
+        "station_id": station_id,
+        "available": True,
+        "model_version": meta.get("version", "1.0"),
+        "horizons": h_list,
+        "forecast": [
+            {
+                "horizon_days": h,
+                "forecast_m3s": None,      # placeholder
+                "lower_95": None,
+                "upper_95": None,
+                "model": "ensemble",
+            }
+            for h in h_list
+        ],
+        "note": "River forecast endpoint scaffolded. Train models via ml/forecast/train.py",
+    }
+
+
+@router.get("/ai/river/forecast")
+async def ai_river_forecast_list() -> Dict[str, Any]:
+    """List all stations with trained forecast models."""
+    artifact_root = Path("ml/artifacts/river_forecast")
+    if not artifact_root.exists():
+        return {"stations": []}
+
+    stations = []
+    for station_dir in artifact_root.iterdir():
+        if station_dir.is_dir():
+            meta_path = station_dir / "meta.json"
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text())
+                stations.append({
+                    "station_id": station_dir.name,
+                    "river": meta.get("gauge_meta", {}).get("river"),
+                    "state": meta.get("gauge_meta", {}).get("state"),
+                    "nse_val": meta.get("metrics", {}).get("nse_val"),
+                    "mae_val": meta.get("metrics", {}).get("mae_val"),
+                })
+    return {"stations": stations}
+
+
+# -----------------------------------------------------------------------------
+# Learned Fusion
+# -----------------------------------------------------------------------------
+
+@router.get("/ai/fusion/weights")
+async def ai_fusion_weights() -> Dict[str, Any]:
+    """
+    Current fusion weights (fixed or learned) + per-component SHAP if available.
+    """
+    weights_path = Path("ml/artifacts/fusion/weights.json")
+    if weights_path.exists():
+        weights = json.loads(weights_path.read_text())
+    else:
+        # Current fixed weights (Phase 1)
+        weights = {
+            "satellite": 0.35,
+            "river": 0.20,
+            "weather": 0.20,
+            "population": 0.15,
+            "social": 0.10,
+        }
+
+    return {
+        "weights": weights,
+        "version": weights.get("version", "fixed-v1"),
+        "learned": weights_path.exists(),
+        "calibrated": False,
+        "note": "Learned fusion scaffolded. Train via ml/fusion/train.py",
+    }
+
+
+@router.post("/ai/fusion/calibrate")
+async def ai_fusion_calibrate() -> Dict[str, Any]:
+    """
+    Trigger calibration job (async). Returns job ID.
+    """
+    # Placeholder for async calibration job
+    return {
+        "status": "accepted",
+        "job_id": "fusion-calibrate-001",
+        "note": "Calibration job scaffolded. Implement background task in ml/fusion/train.py",
+    }
