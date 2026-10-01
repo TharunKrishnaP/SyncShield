@@ -326,6 +326,40 @@ reloads artifacts on mtime change, so a retrain dropped into
 `ml/artifacts/sar_unet` is served without a backend restart. Fail-soft: without
 artifacts the endpoint returns 501 with the training pointer.
 
+### 5.3 Climate-current retraining dataset — pan-India Sentinel-1, strictly 2025–2026
+
+Sen1Floods11 (the Phase-1 model's source, 2016–2020 acquisitions) predates the
+recent intensifying monsoon extremes the reviewer asked about. So a new
+real-data dataset is built for retraining, scoped to **2025-01-01 … 2026-12-31**
+only, covering **every Indian district** (the 763-district registry).
+
+`ml/sar/build_india_2025_2026.py` (all stages anonymous except SAR download):
+
+| Stage | Real source | Access | Output |
+|---|---|---|---|
+| `enumerate` | Copernicus Data Space catalogue (OData) — Sentinel-1 GRD IW, 2025–2026, per grid cell over all districts | anonymous | `ml/data/india_2025_2026/manifest.json` (real scene IDs, acquisition times, footprints) + `district_coverage.csv` |
+| `download-dem` | Copernicus GLO-30 (AWS open data, `Copernicus_DSM_COG_10_*`) | anonymous | 30 m DEM GeoTIFFs per AOI |
+| `download-sar` | Copernicus Data Space (SAFE products) | free CDSE account (token) | calibrated σ⁰ dB VV/VH GeoTIFFs |
+| `chips` | above + (optional) JRC GSW permanent water | local | 256×256 chips (VV, VH) + Otsu weak labels, canonical `{-1,0,1}`, temporal holdout val |
+| `train` | chips → existing `train_unet.py` | local | retrained U-Net artifact |
+
+Coverage proof (built on this machine): **2,665 scenes**, **762/763 districts
+covered (99.87%)** — every flood-prone district (352/352) is covered by ≥1
+real 2025/2026 scene whose footprint contains the district HQ centroid (see
+`ml/data/india_2025_2026/district_coverage.csv` and the committed summary
+`ml/evidence/panindia_2025_2026.md`). Acquisition split: 1,474 scenes in 2025,
+1,191 in 2026 (platforms S1A 2,533 / S1C 65 / S1D 67). The single uncovered
+district is Lakshadweep (coral archipelago; its district centroid lies between
+orbit swaths — no 2025/2026 footprint contains that point; not flood-prone) —
+an honest, documented gap. Labels stay weak-Otsu on VH σ⁰ dB (same real-data
+methodology as Sen1Floods11's WeakLabeled pool); permanent-water subtraction
+(flood ≠ river) is enabled when a JRC GSW mask is supplied. No synthetic
+pixels: every chip is real Sentinel-1/digital-elevation data with real
+acquisition metadata.
+
+Retrain trigger: `python ml/sar/build_india_2025_2026.py train --data-dir
+ml/data/india_2025_2026/chips` after the SAR download/hot-state steps.
+
 ---
 
 ## 6. Flood-aware route risk scoring

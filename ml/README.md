@@ -56,6 +56,17 @@ with the third (river forecasting) scaffolded for Phase 2.
 - **Integration**: `backend/app/ml/sar_model.py` → scene ingest endpoint →
   `datalake` → `satellite_map` in the orchestrator (fills the 0.35 satellite
   weight with real ML extents instead of 0).
+- **Climate-current retraining dataset (2025–2026, pan-India)**: Sen1Floods11
+  acquisitions are 2016–2020, so `sar/build_india_2025_2026.py` builds a new
+  real-data dataset scoped **strictly to 2025-01-01 … 2026-12-31** covering
+  every Indian district: live enumeration of the Copernicus Data Space
+  catalogue → **2,665 real Sentinel-1 GRD IW scenes, 762/763 districts
+  (99.87% / 352/352 flood-prone)** + Copernicus GLO-30 DEM (anonymous
+  download) → Otsu weak labels → 256×256 chips in the `train_unet.py` layout.
+  Retrain: `sar/build_india_2025_2026.py train --data-dir
+  ml/data/india_2025_2026/chips`. (SAR *download* needs a free Copernicus Data
+  Space account token; enumerate/DEM/chips run anonymous.) Evidence:
+  `evidence/panindia_2025_2026.md`.
 
 ### 3. River forecaster (A) — Phase 2
 `forecast/` scaffold: GloFAS-reanalysis-based dataset builder + LSTM/GBM

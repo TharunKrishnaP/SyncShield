@@ -66,6 +66,7 @@ class Sen1Floods11(Dataset):
             pairs = []
             for tif in sorted(base.glob("**/S1Hand_*.tif")):
                 cands = [
+                    tif.with_name(tif.name.replace("S1Hand", "LabelHand")),
                     tif.with_name(tif.name.replace("S1Hand", "Label")),
                     tif.with_name("Label" + tif.name[len("S1Hand_"):]),
                     tif.with_name(tif.name.replace("S1", "Label")),
