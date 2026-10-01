@@ -5,6 +5,7 @@ Leak-proof temporal splits. Outputs per-gauge parquet + manifest.
 """
 import json
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,27 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from tqdm import tqdm
+
+# Add backend to path for india_data import
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "backend"))
+
+from app.models.india_data import RIVER_STATIONS
+
+
+@dataclass
+class DatasetConfig:
+    """Configuration for dataset construction."""
+    glofas_zarr: str                          # Path to GloFAS reanalysis zarr
+    cwc_csv: str                              # Path to CWC observed levels CSV
+    output_dir: str                           # Output directory
+    lookback_days: int = 30                   # Input sequence length
+    forecast_horizons: Tuple[int, ...] = (1, 3, 5, 7)  # Forecast horizons (days)
+    train_end: str = "2023-12-31"             # Train cutoff (inclusive)
+    val_end: str = "2024-06-30"               # Validation cutoff (inclusive)
+    # Test: 2024-07-01 onwards
+    min_obs_per_gauge: int = 200              # Minimum observations per gauge
+    stride_days: int = 1                      # Stride between samples
+    n_workers: int = 4                        # Parallel workers
 
 
 @dataclass
@@ -30,29 +52,21 @@ class GaugeMeta:
     elevation_m: Optional[float] = None
 
 
-@dataclass
-class DatasetConfig:
-    """Configuration for dataset construction."""
-    glofas_zarr: str                          # Path to GloFAS reanalysis zarr
-    cwc_csv: str                              # Path to CWC observed levels CSV
-    gauge_metadata_json: str                  # Path to gauge metadata JSON
-    output_dir: str                           # Output directory
-    lookback_days: int = 30                   # Input sequence length
-    forecast_horizons: Tuple[int, ...] = (1, 3, 5, 7)  # Forecast horizons (days)
-    train_end: str = "2023-12-31"             # Train cutoff (inclusive)
-    val_end: str = "2024-06-30"               # Validation cutoff (inclusive)
-    # Test: 2024-07-01 onwards
-    min_obs_per_gauge: int = 200              # Minimum observations per gauge
-    stride_days: int = 1                      # Stride between samples
-    n_workers: int = 4                        # Parallel workers
-
-
-def load_gauge_metadata(path: str) -> Dict[str, GaugeMeta]:
-    with open(path, "r") as f:
-        raw = json.load(f)
+def load_gauge_metadata() -> Dict[str, GaugeMeta]:
+    """Load gauge metadata from india_data.RIVER_STATIONS."""
     gauges = {}
-    for g in raw:
-        gauges[g["station_id"]] = GaugeMeta(**g)
+    for s in RIVER_STATIONS:
+        station_id, name, river, basin, state, lat, lon = s[0], s[1], s[2], s[3], s[4], s[5], s[6]
+        gauges[station_id] = GaugeMeta(
+            station_id=station_id,
+            name=name,
+            river=river,
+            basin=basin,
+            state=state,
+            district=state,  # approximate
+            lat=lat,
+            lon=lon,
+        )
     return gauges
 
 
@@ -255,7 +269,6 @@ def main():
     config = DatasetConfig(
         glofas_zarr=os.getenv("GLOFAS_ZARR", "data/glofas_reanalysis.zarr"),
         cwc_csv=os.getenv("CWC_CSV", "data/cwc_observations.csv"),
-        gauge_metadata_json=os.getenv("GAUGE_META", "backend/app/models/india_data.json"),
         output_dir=os.getenv("OUTPUT_DIR", "ml/data/river_forecast"),
         lookback_days=30,
         forecast_horizons=(1, 3, 5, 7),
@@ -270,7 +283,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading gauge metadata...")
-    gauges = load_gauge_metadata(config.gauge_metadata_json)
+    gauges = load_gauge_metadata()
 
     print("Loading CWC observations...")
     cwc_df = load_cwc_observations(config.cwc_csv)

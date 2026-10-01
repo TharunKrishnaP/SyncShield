@@ -262,10 +262,14 @@ def main():
         # Flatten X for LGB (samples, lookback * features)
         X_flat = X.reshape(X.shape[0], -1)
 
-        # Split
-        X_train, y_train = X_flat[train_mask], y[train_mask]
-        X_val, y_val = X_flat[val_mask], y[val_mask]
-        X_test, y_test = X_flat[test_mask], y[test_mask]
+        # Split (use 3D X for LSTM, flat for LGB)
+        X_train_3d, y_train = X[train_mask], y[train_mask]
+        X_val_3d, y_val = X[val_mask], y[val_mask]
+        X_test_3d, y_test = X[test_mask], y[test_mask]
+
+        X_train_flat, y_train = X_flat[train_mask], y[train_mask]
+        X_val_flat, y_val = X_flat[val_mask], y[val_mask]
+        X_test_flat, y_test = X_flat[test_mask], y[test_mask]
 
         # --- LSTM ---
         print("  Training LSTM...")
@@ -279,20 +283,20 @@ def main():
             config=config
         )
 
-        # LSTM predictions
+        # LSTM predictions (use 3D X)
         lstm_model.eval()
         with torch.no_grad():
-            lstm_pred_test = lstm_model(torch.tensor(X_test, dtype=torch.float32)).cpu().numpy()
+            lstm_pred_test = lstm_model(torch.tensor(X_test_3d, dtype=torch.float32)).cpu().numpy()
 
         # --- LightGBM ---
         print("  Training LightGBM...")
         lgb_models, lgb_metrics = train_lgb(
-            X_train, y_train, X_val, y_val, len(horizons), config
+            X_train_flat, y_train, X_val_flat, y_val, len(horizons), config
         )
 
-        # LGB predictions
+        # LGB predictions (use flat X)
         lgb_pred_test = np.column_stack([
-            m.predict(X_test, num_iteration=m.best_iteration) for m in lgb_models
+            m.predict(X_test_flat, num_iteration=m.best_iteration) for m in lgb_models
         ])
 
         # --- Hybrid (simple average) ---
