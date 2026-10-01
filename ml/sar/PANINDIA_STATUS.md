@@ -1,79 +1,94 @@
 # Pan-India 2025-2026 SAR U-Net dataset — progress checkpoint (resume here)
 
-Last updated: session resume point. Read this file first, then the headline
-numbers in `ml/data/india_2025_2026/manifest.json` (gitignored) and the builder
+Last updated: user will free C: disk space and return with CDSE credentials.
+Read this file first, then the headline numbers in
+`ml/data/india_2025_2026/manifest.json` (gitignored) and the builder
 `ml/sar/build_india_2025_2026.py`.
 
-## DONE
+## DONE (committed + pushed)
 
-- **Data sources verified live** (anonymous where possible):
-  - Copernicus Data Space **OData browse** works anonymously → real 2025-2026
-    Sentinel-1 GRD scene enumeration over any Indian bbox.
-  - **Copernicus GLO-30 DEM** (AWS Open Data) downloads anonymously.
-  - **CDSE anonymous *download* → HTTP 401** → SAR download requires a free
-    CDSE account token (`CDSE_USER`/`CDSE_PASS`). This is the only blocker to
-    full training.
-- **`ml/sar/build_india_2025_2026.py`** — the real-data pan-India builder.
-  Stages: `enumerate` (anon), `download-dem` (anon), `download-sar` (token),
-  `chips`, `train`, `selftest`. Key fixes along the way: OData filter =
-  `Collection/Name eq 'SENTINEL-1'` + `ContentDate/Start` window + footprint
-  intersect (fast, ~3 s/page); `parse_scene` uses `GeoFootprint` GeoJSON +
-  `ContentDate.Start`; SAR calibration is the S1 spec formula σ⁰=DN²/A²;
-  chip ids strip the leading "S1" so `train_unet.py`'s label matcher pairs
-  them (`chip_id_for`).
-- **`ml/sar/train_unet.py`** — hardened `collect()` label candidates (added
-  `name.replace("S1Hand","LabelHand")` as first candidate).
-- **REAL enumeration complete** — `ml/data/india_2025_2026/manifest.json` +
-  `district_coverage.csv`:
-  - **2,665 real S1 scenes, acquisitions strictly 2025-01-01..2026-12-31**
-    (2025: 1,474 / 2026: 1,191; platforms S1A 2,533 / S1C 65 / S1D 67).
-  - **762/763 districts covered (99.87%)**; flood-prone 352/352.
-  - **Only gap: Lakshadweep** (centroid 72.6358,10.5593 — a small coral
-    archipelago; 12 paged query passes found 0 scene footprints containing the
-    centroid, i.e. genuinely in an orbital swath gap; not flood-prone).
-    Honest, documented limitation.
-- **REAL DEM downloaded** — 15 Copernicus GLO-30 tiles over Assam
-  (`ml/data/india_2025_2026/dem/`, 671 MB, verified: 0–2,774 m).
-- **Tests** — `tests/test_panindia_dataset_builder.py` added
-  (parse/filter/labels/calibration/chip-glue + on-disk manifest audit).
-  13 passed (+ no-synthetic guard) / 3 skipped **before** the manifest existed
-  → re-run now that the manifest is on disk; those 3 should pass and stay green.
-- **Committed locally**: `d288baf` "P2 river dataset builder: load real CWC
-  gauge registry, fix LSTM 3D-vs-flat split" (not yet pushed).
-- **Services restarted** via `start_demo.ps1`: backend :8000 healthy
-  (763 zones, 6 live sources), frontend :5173 (HTTP 200). NOTE: a later
-  `/api/ai/models` and `/api/ai/classify` call **timed out** → re-verify
-  (likely first-load torch warm-up or load; not yet re-checked).
+- **Everything up to the SAR download is committed and pushed** on `main`
+  (HEAD `3dd93b4`; upstream `TharunKrishnaP/SyncShield`).
+  - Builder `ml/sar/build_india_2025_2026.py`, hardened `train_unet.py`,
+    tests `tests/test_panindia_dataset_builder.py` (**16/16 green** —
+    includes the on-disk manifest audit, no synthetic data anywhere).
+  - Evidence `ml/evidence/panindia_2025_2026.md` (committed) + real numbers
+    in `ALGORITHMS.md` §5.3, `ml/README.md`, `ml/EVIDENCE_SHEET.md`.
+- **REAL enumeration**: 2,665 S1 GRD scenes (2025: 1,474 / 2026: 1,191;
+  S1A/S1C/S1D), **762/763 districts (99.87%)**, flood-prone **352/352**;
+  only gap = Lakshadweep (swath gap, not flood-prone — documented).
+- **REAL DEM**: 15 Copernicus GLO-30 tiles over Assam
+  (`ml/data/india_2025_2026/dem/`, 671 MB, 0–2,774 m).
+- **Live demo re-verified after restart** (backend PID
+  `start_demo.ps1`, :8000 healthy zones=763 live=7; frontend :5173 200):
+  `/api/ai/models` OK (text v2 + SAR U-Net resnet18 val_iou 0.2758),
+  `/api/ai/classify` OK (earlier timeout was first-load),
+  `/api/ai/sar/extents` OK (real ML extents in datalake).
+- **Services are DOWN again** if a shell died — restart with:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\start_demo.ps1`
+  (execution policy blocks bare `.\start_demo.ps1`).
 
-## PENDING (in order)
+## BLOCKED (only remaining step — real SAR download + retrain)
 
-1. Run `python ml/evidence/make_panindia_summary.py` → writes committed
-   `ml/evidence/panindia_2025_2026.md` from the live manifest.
-2. Re-run `python -m pytest tests/test_panindia_dataset_builder.py -v`
-   (the 3 skipped manifest tests should now run).
-3. Fill REAL numbers into `ALGORITHMS.md` §5.3 (currently has placeholders
-   "N scenes / M of 763 (P%)") → 2,665 scenes / 762 of 763 (99.87%) / 352/352
-   flood-prone / Lakshadweep note. Also add a row/note in `ml/README.md` and
-   `ml/EVIDENCE_SHEET.md` documenting the 2025-2026 pan-India retraining dataset.
-4. Commit the pan-India work: `ml/sar/build_india_2025_2026.py` (new),
-   `ml/sar/train_unet.py` (modified), `tests/test_panindia_dataset_builder.py`
-   (new), `ml/evidence/make_panindia_summary.py` + generated md (new),
-   `ALGORITHMS.md` (+README/EVIDENCE_SHEET edits). Check/ignore
-   `ml/sar/enumerate_all.log` before committing.
-5. Re-verify demo endpoints after the commit (`/api/ai/models`,
-   `/api/ai/classify`, `POST /api/ai/sar/ingest` with existing artifacts).
-6. **USER DECISION NEEDED** — actually train the U-Net on the 2025-2026 data:
-   real Sentinel-1 download requires a free Copernicus Data Space account.
-   Pipeline is ready:
-   `download-sar --scene <name> --cdse-user U --cdse-pass P` →
-   `chips --sar-dir ... --dem-dir ...` → `train --data-dir .../chips`.
-   Ask user for CDSE credentials (recommended) or NRSC NDEM flood-mask access
-   (would upgrade weak Otsu labels to official flood maps).
-7. Optional: push commits (`git push` after final commit + E2E checks).
+- CDSE **anonymous download → HTTP 401**; needs a free Copernicus Data Space
+  account (`CDSE_USER`/`CDSE_PASS` env or `--cdse-user/--cdse-pass` CLI).
+  Never commit credentials. (`get_cdse_token` = OIDC password grant,
+  `identity.dataspace.copernicus.eu`.)
+- **Disk: only 6.9 GB free on C:** (the only drive) at last check. User will
+  free space. Budget below assumes ~25 GB freed → ~32 GB total.
+
+## RUN PLAN — when you return with token + free disk
+
+1. Hand over creds (env vars: `$env:CDSE_USER=...; $env:CDSE_PASS=...`).
+2. Confirm free space: `Get-PSDrive C`. Need ≥ ~20 GB for ~8-10 scenes,
+   ≥ ~30 GB for the full ~12-scene basin set (see budget).
+3. Pick scenes (manifest on disk): ~10 monsoon-2025 scenes, one per major
+   flood basin (Brahmaputra/Assam — DEM already present; Ganga–Kosi/Bihar;
+   Ganga/UP; Ganga/WB; Godavari; Krishna; Mahanadi/Odisha; Cauvery/TN;
+   Kerala; Narmada) + **2 recent 2026 scenes as temporal holdout**. Use
+   `ml/data/india_2025_2026/manifest.json` footprints to select scene IDs
+   containing the target district HQs.
+4. **Scene-by-scene to stay inside the disk budget** — for each scene:
+   `download-sar --out ml/data/india_2025_2026/sar --scene <SAFE_name>`
+   then **delete `sar/zips/<name>.zip` AND `sar/unzip/<name>/`** after
+   calibration completes (calibrated `sar/<name>_VV.tif` / `_VH.tif` stay,
+   ~2.3 GB/scene total). Steady-state ≈ 2.3 GB × n_scenes + working zip.
+5. **Two-pass chips to keep the temporal holdout honest**
+   (one-pass `--val-frac 0.2` would need all scenes present at once):
+   - train pool (10 monsoon-2025 scenes only):
+     `chips --out ml/data/india_2025_2026/chips --sar-dir .../sar --dem-dir .../dem --val-frac 0 --size 256 --stride 256`
+   - val pool (the 2 recent-2026 scenes):
+     `chips --out ml/data/india_2025_2026/chips --sar-dir .../sar --dem-dir .../dem --val-frac 1 --size 256 --stride 256`
+   (`--val-frac 1` → cutoff at scenes[0] → everything lands in `HandLabeled/`
+   = the loader's val partition; `--val-frac 0` → everything in
+   `WeakLabeled/` = train. Same out dir accumulates both pools.)
+   Check `chips_meta.json` stats: expect ~hundreds–thousands of water chips.
+6. Retrain (does NOT clobber the live model — separate artifact dir):
+   `python ml/sar/train_unet.py --data-dir ml/data/india_2025_2026/chips
+   --size 256 --epochs 35 --pos-weight 8 --grad-clip 1.0
+   --out ml/artifacts/sar_unet_2025_2026`
+   (default `--out` is `ml/artifacts/sar_unet` = the LIVE Sen1Floods11 model
+   the backend serves — keep it, only swap deliberately later).
+   CPU: 35 epochs on ~1-5k chips = hours; run in background, monitor
+   `ml/artifacts/sar_unet_2025_2026/meta.json` (IoU/Dice, chip count).
+7. Commit: builder unchanged; new artifacts + `chips_meta.json` summary +
+   updated numbers in `ALGORITHMS.md`/`EVIDENCE_SHEET.md`/`ml/README.md`.
+   Consider wiring the live swap: point `backend/app/ml/sar_model.py` at the
+   new `sar_unet_2025_2026` dir (config, not code, if possible).
+
+## Budget (approx, per GRD IW scene)
+
+| item | size |
+|---|---|
+| zip (deleted after unzip) | ~1.7 GB |
+| unzipped SAFE (deleted after calibration) | ~4.5 GB |
+| calibrated VV+VH tifs (kept until chips) | ~2.3 GB |
+| GLO-30 DEM tile | ~45 MB, cached |
 
 ## Useful commands
 
 - `python ml/sar/build_india_2025_2026.py selftest` — anonymous smoke test
-- `python ml/sar/build_india_2025_2026.py download-dem --out ... --bbox lon0,lat0,lon1,lat1`
-- `python ml/sar/build_india_2025_2026.py enumerate --out ml/data/india_2025_2026 --step-deg 2.5` (full re-sweep ~25-40 min, quiet by default)
+- `python ml/sar/build_india_2025_2026.py download-dem --out ... --bbox lon0,lat0,lon1,lat1` (anonymous)
+- `python ml/sar/build_india_2025_2026.py enumerate --out ml/data/india_2025_2026 --step-deg 2.5` (full re-sweep ~25-40 min)
 - `python ml/evidence/make_panindia_summary.py`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\start_demo.ps1` (restart services)
