@@ -148,6 +148,51 @@ worth citing as precedent, but the pixels are the wrong sensor and the wrong era
 | NRSC/Bhuvan flood layers, CWC, India WRIS, National Water Portal | Gauge/forecast text and map renderings; no machine-readable delineations found |
 | EM-DAT, GDACS | Event metadata only, no spatial delineation — but still useful for *selecting* 2025-2026 event dates/locations |
 
+## Labelling and validation implementation
+
+Two modules implement the design above. Both are pure/offline-testable and need
+no CDSE credentials to run their tests.
+
+### `ml/sar/derive_flood_labels.py`
+
+Change-detection labelling, canonical labels `-1/0/1`:
+
+- `pair_scenes_for_event()` - brackets each flood event with a real pre/post
+  Sentinel-1 pair. Requires ≥3 days separation (a same-or-next-day pair is not a
+  before/after bracket), ≤12-day baseline (beyond that seasonal change dominates),
+  ≥60% footprint overlap, and both scenes covering the event location. Pairs are
+  sorted shortest-baseline-first.
+- `derive_change_labels()` - per-pixel `post - pre` in dB. Negative = water.
+  Water is a drop in `[-12, -1.5]` dB. Drops steeper than -12 dB are labelled
+  `-1` (no-data) rather than water, because extreme darkening is far more often
+  radar shadow over forest/structures than deep water.
+- `refine_threshold_from_reference()` - picks the drop threshold that best
+  separates a **published expert mask** from non-flood. This is the calibration
+  that replaces a hand-picked constant, and it returns an auditable report
+  (achieved IoU vs reference, flood/non-flood median drop, separation in dB).
+- `score_against_reference()` / `aggregate_agreement()` - IoU, Dice, precision,
+  recall plus the two failure modes reported **separately**: `ref_only` (missed
+  real flood = under-segmentation) and `pred_only` (invented flood =
+  over-segmentation). `-1` pixels are excluded from every metric, so absent
+  expert coverage can never be scored as a correct prediction.
+
+### `ml/sar/validate_against_expert.py`
+
+Scores derived labels against the EOS-RS/ARIA-SG expert masks. Resamples the
+expert map with nearest-neighbour so its delineation is not blurred into a
+partial-coverage smear. Gate: **mean IoU ≥ 0.30 and mean recall ≥ 0.40**, and
+**no empty expert mask** in the set - exits non-zero if failed, so it can run in
+CI. The empty-mask assertion matters because 4 of the 14 published ARIA rasters
+contain zero delineated water.
+
+`ml/sar/selftest_validate.py` runs the whole path on a planted mask to prove the
+plumbing works. Its numbers are **synthetic and are not quoted as validation
+results anywhere** - only real SAR against real ARIA masks counts.
+
+**Test status:** 63 passed (`tests/test_derive_flood_labels.py` 34 new, incl. a
+no-synthetic guard asserting identical scenes and brightening scenes yield zero
+water labels).
+
 ## Resulting design
 
 | Role | Source | Why |
