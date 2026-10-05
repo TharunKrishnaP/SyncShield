@@ -69,6 +69,33 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent.parent   # repo root
 sys.path.insert(0, str(ROOT / "backend"))
 
+
+def load_env_file() -> Optional[Path]:
+    """Load repo-root .env into os.environ without clobbering real env vars.
+
+    Precedence is env-over-file on purpose: CI and Colab set CDSE_USER/
+    CDSE_PASS directly, and a stale .env on disk must never shadow them.
+    python-dotenv is used when importable, with a stdlib fallback so the
+    download path has no hard dependency.
+    """
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return None
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=False)
+    except ImportError:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip().strip("'\""))
+    return env_path
+
+
+load_env_file()
+
 from app.models.india_data import DISTRICTS  # noqa: E402  (763 real districts)
 
 CATALOG = "https://catalogue.dataspace.copernicus.eu/odata/v1"
@@ -702,6 +729,89 @@ def selftest():
 
 
 # ----------------------------------------------------------------------
+def _mask(secret: str) -> str:
+    """Show enough of a secret to confirm *which* one is loaded, never all of it."""
+    if not secret:
+        return "(unset)"
+    return f"{secret[:2]}...{secret[-2:]} (len {len(secret)})"
+
+
+def preflight() -> int:
+    """Report exactly what is ready and what is blocked, before spending compute.
+
+    Exit code is the number of blocking problems, so a caller can gate on it.
+    The credential check performs a REAL token request when credentials exist:
+    a credential that is present but rejected (unverified email, wrong password)
+    is the most likely failure and is invisible without trying.
+    """
+    print("=" * 62)
+    print("PREFLIGHT  pan-India 2025-2026 SAR U-Net dataset")
+    print("=" * 62)
+
+    env_path = ROOT / ".env"
+    print(f"\n[env]      .env            : {'present' if env_path.exists() else 'ABSENT'}")
+    if not env_path.exists():
+        print("             copy .env.example -> .env and fill CDSE_USER/CDSE_PASS")
+
+    user = os.getenv("CDSE_USER")
+    pw = os.getenv("CDSE_PASS")
+    print(f"[creds]    CDSE_USER       : {_mask(user or '')}")
+    print(f"[creds]    CDSE_PASS       : {_mask(pw or '')}")
+
+    blocked = 0
+    token_ok = False
+    if not (user and pw):
+        print("[creds]    STATUS          : BLOCKED (missing credential)")
+        print("             register free at https://dataspace.copernicus.eu/")
+        blocked += 1
+    else:
+        try:
+            tok = get_cdse_token(user, pw)
+            token_ok = bool(tok)
+            print(f"[creds]    STATUS          : OK (token acquired, {len(tok)} chars)")
+        except Exception as exc:                       # noqa: BLE001 - report, don't raise
+            print(f"[creds]    STATUS          : REJECTED -> {type(exc).__name__}")
+            print("             most likely: email not yet verified, or wrong password")
+            blocked += 1
+
+    mf = Path("ml/data/india_2025_2026/manifest.json")
+    if mf.exists():
+        try:
+            scenes = json.loads(mf.read_text(encoding="utf-8")).get("scenes", [])
+        except Exception:                               # noqa: BLE001
+            scenes = []
+        print(f"[catalog]  manifest scenes : {len(scenes)}")
+    else:
+        print("[catalog]  manifest        : ABSENT (run the enumerate stage)")
+
+    # rglob: the ARIA rasters sit one level down, in per-package subdirs.
+    sar = Path("F:/floodml/validation/aria_sg_extracted")
+    n_aria = len(list(sar.rglob("*.tif"))) if sar.is_dir() else 0
+    print(f"[validate] ARIA expert masks: {n_aria}")
+
+    for name in ("sar_unet", "sar_unet_2025_2026"):
+        art = Path("ml/artifacts") / name
+        if (art / "meta.json").exists():
+            try:
+                meta = json.loads((art / "meta.json").read_text(encoding="utf-8"))
+                print(f"[model]    {name:<16}: val_iou={meta.get('val_iou')} "
+                      f"trained={str(meta.get('trained_at'))[:10]}")
+            except Exception:                           # noqa: BLE001
+                print(f"[model]    {name:<16}: meta.json unreadable")
+        else:
+            print(f"[model]    {name:<16}: ABSENT")
+
+    print("\n" + "-" * 62)
+    if blocked:
+        print(f"BLOCKED on {blocked} item(s). Nothing can be downloaded until cleared.")
+    elif not token_ok:
+        print("Credentials present but unverified.")
+    else:
+        print("READY. Next: download-sar --scene <SAFE name>")
+    print("-" * 62)
+    return blocked
+
+
 def main():
     p = argparse.ArgumentParser(description="Pan-India 2025-2026 SAR U-Net dataset")
     sub = p.add_subparsers(dest="stage", required=True)
@@ -738,11 +848,14 @@ def main():
     t.add_argument("--data-dir", default="ml/data/india_2025_2026/chips")
 
     sub.add_parser("selftest")
+    sub.add_parser("preflight")
 
     a = p.parse_args()
     out_dir = Path(a.out if hasattr(a, "out") else "ml/data/india_2025_2026")
 
-    if a.stage == "enumerate":
+    if a.stage == "preflight":
+        sys.exit(preflight())
+    elif a.stage == "enumerate":
         enumerate_all(out_dir, step_deg=a.step_deg, quick_cells=a.quick_cells,
                       max_pages_per_cell_year=a.max_pages, quiet=a.quiet)
     elif a.stage == "download-dem":
