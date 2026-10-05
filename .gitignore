@@ -20,8 +20,8 @@ backend/data_lake/
 citizen_media/
 
 # ---- Runtime service logs (demo churn every refresh) ----
-backend_demo*.log
-frontend_demo*.log
+*_demo*.log
+*_demo_err.log
 ml/sar/retrain_full.log
 ml/text/retrain_text_v2b.log
 
