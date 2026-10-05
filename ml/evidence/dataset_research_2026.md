@@ -90,17 +90,43 @@ but would still end pre-2021.
 **Verdict: not a segmentation label source.** Useful only as flood-prone basin
 prior knowledge and severity context for the forecasting side.
 
-### 4. India Flood Inventory / IFI-Impacts (Zenodo 4742142 → record 16994648) — partially usable
+### 4. India Flood Inventory / IFI-Impacts (Zenodo 4742142 → record 16994648) — downloaded, priors only
 
 Best India-specific geospatial flood source found: IMD-sourced events with manual
-digitisation, **1967-2023**, plus district flooded area and a District Flood Severity
-Index. CC-BY-NC-4.0, published 2025-08-29. Files: `India_Flood_Inventory_v3.csv`,
-`District_FloodImpact.csv`, `District_FloodedArea.csv`, `DFSI.csv`.
+digitisation, plus district flooded area and a District Flood Severity Index.
+**CC-BY-NC-4.0** (non-commercial), published 2025-08-29. All four CSVs retrieved to
+`F:\floodml\validation\ifi_impacts\` after Zenodo initially returned 403.
 
-**Blocked:** Zenodo returned **HTTP 403 on every file-content route** (metadata API
-still 200), so the CSVs are not yet on disk. Retry later. Even when retrieved it ends
-**2023**, so it informs basin/severity priors, not 2025-26 labels. Note the **NC**
-licence — non-commercial.
+Audited locally:
+
+| Property | Measured |
+|---|---|
+| Flood events | **6,876**, all `Event Source` = IMD |
+| Date range | **1967 → 2023** (2024: 0, 2025: 0, 2026: 0) |
+| Coverage | **79** states/UTs; Maharashtra 1,012 · Assam 908 · Kerala 604 · Karnataka 492 · UP 448 · HP 362 |
+| Event years | 2021: 338 · 2022: 1,138 · 2023: 634 (dense recent coverage up to 2023) |
+| `District_LGD_Codes` present | **99.1%** (6,817/6,876) |
+| `Duration(Days)` present | 99.7% |
+| Human fatality present | 54.8% |
+| **`Latitude` / `Longitude`** | **0%** |
+| **`Area Affected`** | **0%** |
+| `Severity` column | present but **entirely empty** (all 6,876 rows blank) |
+| `Main Cause` | 554 distinct raw strings — needs normalisation (case/spacing variants) |
+| DFSI (district severity) | **744** districts, 37 states, 743 scored, 1 blank; 4.24 / 14.15 / 19.30 (min/median/max) |
+| District % flooded (permanent-water corrected) | 732 districts; median 1.23%, max 23.62%; 398 districts >1%, 116 >5% |
+
+**What it is good for:** the `District_LGD_Codes` field joins cleanly to our existing
+763-district list, and DFSI plus corrected %-flooded give a defensible *flood-prone
+district prior* and a district-level severity baseline for the forecasting side. That
+is genuinely more useful than INDOFLOODS for our purposes.
+
+**What disqualifies it as a label source:** ends **2023**; **no coordinates and no
+flooded area**, so it cannot be spatially joined to imagery without external
+geocoding; and the `Severity` column is empty, so severity must come from DFSI
+instead. **NC licence** — non-commercial, which matters if this ever ships.
+
+**Verdict: adopted as basin/district priors and severity baseline. Not a pixel label
+source.**
 
 ### 5. WorldFloods / ML4Floods — rejected for this task
 
@@ -130,7 +156,8 @@ worth citing as precedent, but the pixels are the wrong sensor and the wrong era
 | Labels | **Derived: pre/post-event SAR change detection**, minus permanent water | Only option for 2025-26; change detection distinguishes *flood* from merely *water*, unlike scene-level Otsu |
 | Where to look | Recent event catalogues (GDACS / EM-DAT) | Supplies real, dated 2025-2026 flood locations to aim the change detection |
 | **Validation** | **EOS-RS/ARIA-SG India FPMs** (11,479.5 km², 5 events) | Published expert SAR delineations; measures whether our derived labels are accurate |
-| Basin priors | INDOFLOODS, IFI-Impacts | Flood-prone basins and severity context; ends 2020/2023, never a pixel label |
+| District priors + severity | **IFI-Impacts** — 6,876 events, 79 states, DFSI over 744 districts, `District_LGD_Codes` joins to our 763-district list | `Latitude`/`Longitude`/`Area Affected` are **0% populated** and `Severity` is empty; ends 2023, so priors only |
+| Basin priors | INDOFLOODS — 4,548 events, 155 gauges | Gauge points only, ends 2020, Ganga/Brahmaputra withheld |
 
 ## The honest claim
 
@@ -148,3 +175,6 @@ Recent, real, and checkable — which is what the reviewer was actually asking f
 - Validation assets: `python ml/evidence/make_validation_summary.py`
 - EMS enumeration: `GET https://rapidmapping.emergency.copernicus.eu/backend/dashboard-api/public-activations-info/`
 - INDOFLOODS audit: local CSVs under `F:\floodml\indofloods\`
+- IFI-Impacts audit: local CSVs under `F:\floodml\validation\ifi_impacts\`
+  (note: `Import-Csv` fails on these files in PowerShell — a header field collides;
+  parse with Python's `csv` module)
