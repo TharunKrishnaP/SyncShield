@@ -447,10 +447,14 @@ def _parse_calibration(safe_dir: Path, pol: str):
     assumptions). Returns (azimuth_times, range_times, values[az, range]).
     """
     import re
-    try:
-        xml_path = next(
-            (safe_dir / "annotation" / "calibration").glob(f"calibration-{pol}.xml"))
-    except StopIteration:
+    # Case-insensitive: CDSE SAFE ships ``calibration-vv.xml`` (lowercase)
+    # while the MPC route writes ``calibration-VV.xml`` (see mpc_fetch.py).
+    # A case-sensitive glob would silently miss one of them on Linux.
+    cal_dir = safe_dir / "annotation" / "calibration"
+    want_xml = f"calibration-{pol.lower()}.xml"
+    xml_path = next((p for p in cal_dir.glob("*.xml")
+                     if p.name.lower() == want_xml), None)
+    if xml_path is None:
         raise RuntimeError(f"no calibration xml for {pol} in {safe_dir}")
     tree = ET.parse(xml_path)
     root = tree.getroot()
@@ -514,7 +518,12 @@ def calibrate_safe(safe_dir: Path, pol: str, out_tif: Path,
     """
     import rasterio
     from rasterio.vrt import WarpedVRT
-    meas = list((safe_dir / "measurement").glob(f"*{pol}.tiff"))
+    # Case-insensitive: the official SAFE measurement is ``...-vv-...tiff``
+    # (lowercase) while mpc_fetch.py writes ``s1a-iw-vv.tiff``. Globbing
+    # ``*{pol}.tiff`` fails on Linux/Colab for the lowercase SAFE layout.
+    want_tif = f"{pol.lower()}.tiff"
+    meas = [p for p in sorted((safe_dir / "measurement").glob("*.tiff"))
+            if p.name.lower().endswith(want_tif)]
     if not meas:
         raise RuntimeError(f"no measurement {pol} in {safe_dir}")
     az_times, range_times, lut = _parse_calibration(safe_dir, pol)
@@ -601,7 +610,8 @@ def otsu_threshold(values: np.ndarray) -> float:
 def build_chips(sar_dir: Path, dem_dir: Path, out_dir: Path, size: int = 256,
                 stride: int = 128, val_frac: float = 0.2,
                 gsw_tiff: Optional[Path] = None,
-                min_water_frac: float = 0.001) -> dict:
+                min_water_frac: float = 0.001,
+                label_dir: Optional[Path] = None) -> dict:
     """Tile calibrated SAR scenes into U-Net chips; canonical labels {-1,0,1}.
 
     Each chip stores 2 bands of **sigma-0 dB** (VV, VH) -- the same band
@@ -640,9 +650,19 @@ def build_chips(sar_dir: Path, dem_dir: Path, out_dir: Path, size: int = 256,
         print("permanent-water subtraction enabled (GSW)")
 
     stats = {"chips": 0, "train": 0, "val": 0, "skipped_no_data": 0,
-             "skipped_no_water": 0, "gsw_excluded_px": 0}
+             "skipped_no_water": 0, "gsw_excluded_px": 0,
+             "gfm_label_chips": 0, "otsu_label_chips": 0}
+    print(f"label source: {'GFM (' + str(label_dir) + ')' if label_dir else 'Otsu weak (VH dB)'}")
     for vv, vh in scenes:
         pool = "HandLabeled" if vv.name >= cutoff else "WeakLabeled"
+        # Prefer a real GFM-derived label for this scene when one exists; it
+        # shares the scene's EPSG:4326 grid (see gfm_fetch.build_label_for_scene),
+        # so the chip window addresses imagery and label identically.
+        label_tif = None
+        if label_dir is not None:
+            cand = Path(label_dir) / vv.name.replace("_VV.tif", "_LABEL.tif")
+            if cand.exists():
+                label_tif = cand
         with (rasterio.open(str(vv)) as sv, rasterio.open(str(vh)) as sh,
               WarpedVRT(sv, crs="EPSG:4326", resampling="bilinear") as wv,
               WarpedVRT(sh, crs="EPSG:4326", resampling="bilinear") as wh):
@@ -662,22 +682,29 @@ def build_chips(sar_dir: Path, dem_dir: Path, out_dir: Path, size: int = 256,
                     if not (np.isfinite(vv_db).any() and np.isfinite(vh_db).any()):
                         stats["skipped_no_data"] += 1
                         continue
-                    thr = otsu_threshold(vh_db)
-                    water = (vh_db > thr) if np.isfinite(thr) else \
-                        np.zeros_like(vh_db, bool)
-                    if gsw is not None:
-                        # subtract perennial water so label = flood water only
-                        try:
-                            gsw_win = gsw.read(
-                                1, window=win,
-                                out_shape=(size, size)).astype(np.float32)
-                            perm = gsw_win >= 100
-                            water = water & ~perm
-                            stats["gsw_excluded_px"] += int(perm.sum())
-                        except Exception:
-                            pass
-                    lab = np.where(water, 1, 0).astype(np.int16)
-                    lab[~np.isfinite(vv_db) & ~np.isfinite(vh_db)] = -1
+                    if label_tif is not None:
+                        with rasterio.open(str(label_tif)) as sl:
+                            lab = sl.read(1, window=win).astype(np.int16)
+                        water = lab == 1
+                        stats["gfm_label_chips"] += 1
+                    else:
+                        thr = otsu_threshold(vh_db)
+                        water = (vh_db > thr) if np.isfinite(thr) else \
+                            np.zeros_like(vh_db, bool)
+                        if gsw is not None:
+                            # subtract perennial water so label = flood only
+                            try:
+                                gsw_win = gsw.read(
+                                    1, window=win,
+                                    out_shape=(size, size)).astype(np.float32)
+                                perm = gsw_win >= 100
+                                water = water & ~perm
+                                stats["gsw_excluded_px"] += int(perm.sum())
+                            except Exception:
+                                pass
+                        lab = np.where(water, 1, 0).astype(np.int16)
+                        lab[~np.isfinite(vv_db) & ~np.isfinite(vh_db)] = -1
+                        stats["otsu_label_chips"] += 1
                     if water.mean() < min_water_frac:
                         stats["skipped_no_water"] += 1
                         continue
@@ -706,6 +733,7 @@ def build_chips(sar_dir: Path, dem_dir: Path, out_dir: Path, size: int = 256,
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "chips_meta.json").write_text(
         json.dumps({"stats": stats, "label_scheme": CANON_LABELS,
+                    "label_source": ("gfm" if label_dir else "otsu-weak"),
                     "split": "temporal (val = most recent scenes)",
                     "bands": ["VV_sigma0_dB", "VH_sigma0_dB"],
                     "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
@@ -774,6 +802,15 @@ def preflight() -> int:
             print("             most likely: email not yet verified, or wrong password")
             blocked += 1
 
+    # Credential-free routes: the pipeline no longer depends on CDSE at all.
+    print("[sar-src]  STATUS          : READY (credential-free)")
+    print("             Microsoft Planetary Computer mirrors the same ESA Sentinel-1")
+    print("             GRD products; anonymous STAC + SAS. -> download-sar-mpc")
+    print("[gfm]      STATUS          : READY (credential-free labels)")
+    print("             EODC STAC https://stac.eodc.eu/api/v1 (collection GFM),")
+    print("             2015->present, global incl. India. -> gfm-labels")
+    print("             portal account (optional, web viewer only): https://portal.gfm.eodc.eu/")
+
     mf = Path("ml/data/india_2025_2026/manifest.json")
     if mf.exists():
         try:
@@ -802,14 +839,18 @@ def preflight() -> int:
             print(f"[model]    {name:<16}: ABSENT")
 
     print("\n" + "-" * 62)
+    print("Credential-free routes (no account needed):")
+    print("  SAR imagery : download-sar-mpc --bbox ... --start ... --end ...")
+    print("  GFM labels  : gfm-labels --sar-dir ...   (EODC STAC, anonymous)")
     if blocked:
-        print(f"BLOCKED on {blocked} item(s). Nothing can be downloaded until cleared.")
+        print(f"CDSE route blocked on {blocked} item(s) -- optional, not required.")
     elif not token_ok:
-        print("Credentials present but unverified.")
+        print("CDSE credentials present but unverified -- optional.")
     else:
-        print("READY. Next: download-sar --scene <SAFE name>")
+        print("CDSE route also READY.")
+    print("READY via MPC + GFM. Next: download-sar-mpc, then gfm-labels, then chips.")
     print("-" * 62)
-    return blocked
+    return 0
 
 
 def main():
@@ -835,11 +876,32 @@ def main():
     s.add_argument("--cdse-user", default=None)
     s.add_argument("--cdse-pass", default=None)
 
+    m = sub.add_parser("download-sar-mpc")
+    m.add_argument("--out", default="ml/data/india_2025_2026/sar")
+    m.add_argument("--bbox", required=True, help="lon0,lat0,lon1,lat1")
+    m.add_argument("--start", required=True, help="ISO date/datetime")
+    m.add_argument("--end", required=True, help="ISO date/datetime")
+    m.add_argument("--max-scenes", type=int, default=3)
+    m.add_argument("--pols", default="VV,VH")
+
+    g = sub.add_parser("gfm-labels")
+    g.add_argument("--sar-dir", default="ml/data/india_2025_2026/sar")
+    g.add_argument("--out", default="ml/data/india_2025_2026/labels_gfm")
+    g.add_argument("--cache-dir", default="ml/data/india_2025_2026/gfm_tiles")
+    g.add_argument("--mode", choices=("flood", "water"), default="flood")
+    g.add_argument("--min-likelihood", type=int, default=None)
+    g.add_argument("--pad-days", type=int, default=1)
+    g.add_argument("--dry-run", action="store_true",
+                   help="print the tiles that would be fetched, download nothing")
+
     c = sub.add_parser("chips")
     c.add_argument("--out", default="ml/data/india_2025_2026/chips")
     c.add_argument("--sar-dir", default="ml/data/india_2025_2026/sar")
     c.add_argument("--dem-dir", default="ml/data/india_2025_2026/dem")
     c.add_argument("--gsw-tiff", default=None)
+    c.add_argument("--label-dir", default=None,
+                   help="GFM label GeoTIFFs (<scene>_LABEL.tif) from gfm-labels;"
+                        " when present they replace the Otsu weak labels")
     c.add_argument("--size", type=int, default=256)
     c.add_argument("--stride", type=int, default=128)
     c.add_argument("--val-frac", type=float, default=0.2)
@@ -848,6 +910,7 @@ def main():
     t.add_argument("--data-dir", default="ml/data/india_2025_2026/chips")
 
     sub.add_parser("selftest")
+    sub.add_parser("gfm-selftest")
     sub.add_parser("preflight")
 
     a = p.parse_args()
@@ -874,10 +937,33 @@ def main():
                     z.extractall(sar_dir / "unzip")
             calibrate_safe(safe, "VV", sar_dir / f"{name}_VV.tif")
             calibrate_safe(safe, "VH", sar_dir / f"{name}_VH.tif")
+    elif a.stage == "download-sar-mpc":
+        import mpc_fetch
+        bbox = tuple(float(x) for x in a.bbox.split(","))
+        scenes = mpc_fetch.search_scenes(bbox, a.start, a.end,
+                                         limit=a.max_scenes)
+        print(f"MPC: {len(scenes)} scene(s) for {a.bbox} {a.start}..{a.end}")
+        if not scenes:
+            sys.exit("no MPC scenes matched")
+        cache = mpc_fetch.SasCache()
+        pols = tuple(p.strip().upper() for p in a.pols.split(",") if p.strip())
+        for sc in scenes[:a.max_scenes]:
+            print(f"  {sc['name']}  ({sc['acquisition'][:10]})")
+            mpc_fetch.fetch_and_calibrate(sc, Path(a.out), pols=pols, cache=cache)
+    elif a.stage == "gfm-labels":
+        import gfm_fetch
+        gfm_fetch.labels_for_scenes(
+            Path(a.sar_dir), Path(a.out), Path(a.cache_dir), mode=a.mode,
+            min_likelihood=a.min_likelihood, pad_days=a.pad_days,
+            dry_run=a.dry_run)
+    elif a.stage == "gfm-selftest":
+        import gfm_fetch
+        sys.exit(gfm_fetch.selftest())
     elif a.stage == "chips":
         build_chips(Path(a.sar_dir), Path(a.dem_dir), out_dir, size=a.size,
                     stride=a.stride, val_frac=a.val_frac,
-                    gsw_tiff=Path(a.gsw_tiff) if a.gsw_tiff else None)
+                    gsw_tiff=Path(a.gsw_tiff) if a.gsw_tiff else None,
+                    label_dir=Path(a.label_dir) if a.label_dir else None)
     elif a.stage == "train":
         import subprocess
         subprocess.check_call([sys.executable, str(ROOT / "ml/sar/train_unet.py"),

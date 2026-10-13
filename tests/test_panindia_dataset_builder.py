@@ -23,6 +23,7 @@ from ml.sar.build_india_2025_2026 import (  # noqa: E402
     CANON_LABELS,
     _odata_filter_parts,
     _calibrate_to_sigma0_db,
+    _parse_calibration,
     chip_id_for,
     otsu_threshold,
     parse_scene,
@@ -101,6 +102,48 @@ class TestLabelAndCalibrationMath:
             assert cid.startswith("A_IW_GRDH_1SDV_2025")
             img = f"S1Hand_{cid}.tif"
             assert img.replace("S1", "Label") == f"LabelHand_{cid}.tif"
+
+
+_CAL_XML = """<calibration>
+  <calibrationVectorList count="1">
+    <calibrationVector>
+      <azimuthTime>2025-07-10T23:30:56.000000</azimuthTime>
+      <rangeTime>0.0 0.5 1.0</rangeTime>
+      <sigmaNought>1.0 2.0 4.0</sigmaNought>
+    </calibrationVector>
+  </calibrationVectorList>
+</calibration>
+"""
+
+
+class TestCalibrationCaseInsensitivity:
+    """CDSE SAFE uses lowercase ``calibration-vv.xml`` while the MPC route
+    writes ``calibration-VV.xml``. A case-sensitive glob silently misses one,
+    which only shows up on Linux/Colab -- so pin both spellings here."""
+
+    def _safe(self, tmp_path, filename):
+        cal = tmp_path / "S1A_TEST.SAFE" / "annotation" / "calibration"
+        cal.mkdir(parents=True)
+        (cal / filename).write_text(_CAL_XML, encoding="utf-8")
+        return cal.parent.parent
+
+    def test_lowercase_safe_layout_is_found(self, tmp_path):
+        sd = self._safe(tmp_path, "calibration-vv.xml")
+        az, rng, vals = _parse_calibration(sd, "VV")
+        assert az == ["2025-07-10T23:30:56.000000"]
+        assert list(rng) == [0.0, 0.5, 1.0]
+        assert vals.shape == (1, 3)
+
+    def test_uppercase_mpc_layout_is_found(self, tmp_path):
+        sd = self._safe(tmp_path, "calibration-VV.xml")
+        az, _, _ = _parse_calibration(sd, "VV")
+        assert len(az) == 1
+
+    def test_missing_calibration_raises(self, tmp_path):
+        cal = tmp_path / "S1A_TEST.SAFE" / "annotation" / "calibration"
+        cal.mkdir(parents=True)
+        with pytest.raises(RuntimeError, match="no calibration xml"):
+            _parse_calibration(cal.parent.parent, "VV")
 
 
 @pytest.mark.skipif(not MANIFEST.exists(),
