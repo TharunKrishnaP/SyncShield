@@ -908,6 +908,10 @@ def main():
 
     t = sub.add_parser("train")
     t.add_argument("--data-dir", default="ml/data/india_2025_2026/chips")
+    t.add_argument("--out", default="ml/artifacts/sar_unet_2025_2026",
+                   help="artifact dir; defaults to a NEW dir so the live "
+                        "ml/artifacts/sar_unet is never clobbered")
+    t.add_argument("--epochs", type=int, default=35)
 
     sub.add_parser("selftest")
     sub.add_parser("gfm-selftest")
@@ -967,9 +971,9 @@ def main():
     elif a.stage == "train":
         import subprocess
         subprocess.check_call([sys.executable, str(ROOT / "ml/sar/train_unet.py"),
-                               "--data-dir", a.data_dir, "--size", "256",
-                               "--epochs", "35", "--pos-weight", "8",
-                               "--grad-clip", "1.0"])
+                               "--data-dir", a.data_dir, "--out", a.out,
+                               "--size", "256", "--epochs", str(a.epochs),
+                               "--pos-weight", "8", "--grad-clip", "1.0"])
     elif a.stage == "selftest":
         selftest()
 
